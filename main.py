@@ -28,83 +28,105 @@ class InteractivePDFViewer(ctk.CTkScrollableFrame):
         self.info_label.pack(pady=5)
         
     def load_pdf(self, file_path):
-        """Carga y muestra todas las páginas del PDF"""
+        """Carga y muestra las páginas del PDF de forma incremental"""
         self.clear()
         self.current_pdf = file_path
+        self.loading_active = True
         
-        # Mostrar mensaje de carga
-        loading_label = ctk.CTkLabel(self, text="Cargando PDF completo...", 
-                                     font=("Arial", 14))
-        loading_label.pack(pady=20)
+        # Mostrar mensaje de carga inicial
+        self.loading_label = ctk.CTkLabel(self, text="Iniciando carga de PDF...", 
+                                         font=("Arial", 14))
+        self.loading_label.pack(pady=20)
         
-        # Cargar en segundo plano
-        def load_in_background():
+        def load_incremental():
             try:
-                # Cargar TODAS las páginas (sin límite)
-                images = pdf_tools.pdf_to_images(file_path, dpi=int(150 * self.zoom_level))
+                # Obtener número de páginas
+                total_pages = pdf_tools.get_pdf_page_count(file_path)
+                self.after(0, lambda: self.loading_label.configure(text=f"Cargando {total_pages} páginas..."))
                 
-                # Actualizar UI en el hilo principal
-                self.after(0, lambda: self._display_images(images))
+                for i in range(1, total_pages + 1):
+                    if not self.loading_active:
+                        break
+                        
+                    # Cargar una sola página a la vez
+                    img = pdf_tools.pdf_page_to_image(file_path, i, dpi=int(150 * self.zoom_level))
+                    
+                    if img:
+                        # Mostrar página en la UI
+                        self.after(0, lambda p=img, n=i: self._add_page_to_ui(p, n, total_pages))
+                
+                # Al finalizar, remover label de carga
+                self.after(0, self._finalize_loading)
+                
             except Exception as e:
                 self.after(0, lambda: self._show_error(str(e)))
         
-        thread = threading.Thread(target=load_in_background, daemon=True)
-        thread.start()
+        self.load_thread = threading.Thread(target=load_incremental, daemon=True)
+        self.load_thread.start()
     
-    def _display_images(self, images):
-        """Muestra las imágenes en canvas interactivos"""
-        self.clear()
+    def _add_page_to_ui(self, img, page_num, total_pages):
+        """Agrega una sola página a la interfaz de forma dinámica"""
+        if page_num == 1:
+            if hasattr(self, 'loading_label') and self.loading_label.winfo_exists():
+                self.loading_label.destroy()
         
-        total_pages = len(images)
-        self.info_label.configure(text=f"PDF: {os.path.basename(self.current_pdf)} | {total_pages} páginas | Modo: {self.interaction_mode}")
+        self.info_label.configure(
+            text=f"PDF: {os.path.basename(self.current_pdf)} | {total_pages} páginas | Modo: {self.interaction_mode}"
+        )
         
-        for i, img in enumerate(images):
-            page_num = i + 1
-            
-            # Frame para cada página
-            page_frame = ctk.CTkFrame(self)
-            page_frame.pack(pady=10, padx=5, fill="x")
-            
-            # Label de número de página
-            page_label = ctk.CTkLabel(page_frame, text=f"Página {page_num}", 
-                                     font=("Arial", 12, "bold"))
-            page_label.pack(pady=(5, 2))
-            
-            # Label para coordenadas
-            coord_label = ctk.CTkLabel(page_frame, text="", font=("Arial", 9))
-            coord_label.pack(pady=(0, 5))
-            
-            # Canvas para la imagen (interactivo)
-            canvas = Canvas(page_frame, width=img.width, height=img.height, 
-                          highlightthickness=0, bg='white')
-            canvas.pack(pady=5)
-            
-            # Convertir PIL Image a PhotoImage
-            photo = ImageTk.PhotoImage(img)
-            canvas.create_image(0, 0, anchor='nw', image=photo)
-            canvas.image = photo  # Mantener referencia
-            
-            # Guardar datos de la página
-            page_data = {
-                'canvas': canvas,
-                'image': img,
-                'photo': photo,
-                'page_num': page_num,
-                'width': img.width,
-                'height': img.height,
-                'coord_label': coord_label,
-                'pdf_width': 612,  # Ancho estándar carta en puntos
-                'pdf_height': 792  # Alto estándar carta en puntos
-            }
-            self.pages_data.append(page_data)
-            
-            # Eventos de mouse
-            canvas.bind('<Button-1>', lambda e, pd=page_data: self._on_canvas_click(e, pd))
-            canvas.bind('<Motion>', lambda e, pd=page_data: self._on_canvas_motion(e, pd))
-            
-            # Si hay páginas seleccionadas, marcarlas
-            if page_num in self.selected_pages:
-                self._draw_selection_overlay(canvas, img.width, img.height)
+        # Frame para cada página
+        page_frame = ctk.CTkFrame(self)
+        page_frame.pack(pady=10, padx=5, fill="x")
+        
+        # Label de número de página
+        page_label = ctk.CTkLabel(page_frame, text=f"Página {page_num}", 
+                                 font=("Arial", 12, "bold"))
+        page_label.pack(pady=(5, 2))
+        
+        # Label para coordenadas
+        coord_label = ctk.CTkLabel(page_frame, text="", font=("Arial", 9))
+        coord_label.pack(pady=(0, 5))
+        
+        # Canvas para la imagen (interactivo)
+        canvas = Canvas(page_frame, width=img.width, height=img.height, 
+                      highlightthickness=0, bg='white')
+        canvas.pack(pady=5)
+        
+        # Convertir PIL Image a PhotoImage
+        photo = ImageTk.PhotoImage(img)
+        canvas.create_image(0, 0, anchor='nw', image=photo)
+        canvas.image = photo  # Mantener referencia
+        
+        # Guardar datos de la página
+        page_data = {
+            'canvas': canvas,
+            'image': img,
+            'photo': photo,
+            'page_num': page_num,
+            'width': img.width,
+            'height': img.height,
+            'coord_label': coord_label,
+            'pdf_width': 612,  # Ancho estándar carta
+            'pdf_height': 792
+        }
+        self.pages_data.append(page_data)
+        
+        # Ordenar por número de página si es necesario (Threading podría desordenarlas, 
+        # aunque aquí las cargamos secuencialmente en el hilo)
+        
+        # Eventos de mouse
+        canvas.bind('<Button-1>', lambda e, pd=page_data: self._on_canvas_click(e, pd))
+        canvas.bind('<Motion>', lambda e, pd=page_data: self._on_canvas_motion(e, pd))
+        
+        # Si hay páginas seleccionadas, marcarlas
+        if page_num in self.selected_pages:
+            self._draw_selection_overlay(canvas, img.width, img.height)
+
+    def _finalize_loading(self):
+        """Limpieza al finalizar la carga"""
+        if hasattr(self, 'loading_label') and self.loading_label.winfo_exists():
+            self.loading_label.destroy()
+        self.loading_active = False
     
     def _on_canvas_click(self, event, page_data):
         """Maneja clics en el canvas"""
@@ -221,7 +243,8 @@ class InteractivePDFViewer(ctk.CTkScrollableFrame):
         error_label.pack(pady=20)
     
     def clear(self):
-        """Limpia el visor"""
+        """Limpia el visor y detiene cargas activas"""
+        self.loading_active = False
         for widget in self.winfo_children():
             if widget != self.info_frame:
                 widget.destroy()
