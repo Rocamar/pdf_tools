@@ -91,8 +91,8 @@ Editor PDF Interactivo es una aplicación de escritorio para Linux Mint que perm
 ### Paso 1: Clonar el Repositorio
 
 ```bash
-git clone https://github.com/TU_USUARIO/pdf-editor-interactive.git
-cd pdf-editor-interactive
+git clone https://github.com/Rocamar/pdf_tools.git
+cd pdf_tools
 ```
 
 ### Paso 2: Instalar Dependencias del Sistema
@@ -253,7 +253,7 @@ pdf-editor-interactive/
 
 Si encuentras un bug o tienes una sugerencia:
 
-1. Verifica que no exista ya un [issue](https://github.com/TU_USUARIO/pdf-editor-interactive/issues) similar
+1. Verifica que no exista ya un [issue](https://github.com/Rocamar/pdf_tools/issues) similar
 2. Crea un nuevo issue con:
    - Descripción clara del problema
    - Pasos para reproducirlo
@@ -273,7 +273,7 @@ Este proyecto está bajo la Licencia MIT. Ver el archivo [LICENSE](LICENSE) para
 
 **Rodolfo**
 
-- GitHub: [@TU_USUARIO](https://github.com/TU_USUARIO)
+- GitHub: [@Rocamar](https://github.com/Rocamar)
 
 ---
 
