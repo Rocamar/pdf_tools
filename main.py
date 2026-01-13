@@ -14,10 +14,16 @@ class InteractivePDFViewer(ctk.CTkScrollableFrame):
         super().__init__(master, **kwargs)
         self.current_pdf = None
         self.zoom_level = 1.0
+        self.zoom_mode = 'fit_width'  # 'fixed' or 'fit_width'
         self.pages_data = []  # Lista de {canvas, image, page_num, width, height}
         self.interaction_mode = 'view'  # 'view', 'add_text', 'add_image', 'select_pages'
         self.on_click_callback = None
         self.selected_pages = set()
+        self.resize_timer = None
+        self.last_width = 0
+        
+        # Vincular evento de resize para modo responsivo
+        self.bind("<Configure>", self._on_container_resize)
         
         # Info panel
         self.info_frame = ctk.CTkFrame(self)
@@ -49,6 +55,7 @@ class InteractivePDFViewer(ctk.CTkScrollableFrame):
                         break
                         
                     # Cargar una sola página a la vez
+                    # Factor de conversión: 150 DPI / 72 DPI (estándar PDF) = 2.0833
                     img = pdf_tools.pdf_page_to_image(file_path, i, dpi=int(150 * self.zoom_level))
                     
                     if img:
@@ -61,8 +68,64 @@ class InteractivePDFViewer(ctk.CTkScrollableFrame):
             except Exception as e:
                 self.after(0, lambda: self._show_error(str(e)))
         
+        if self.zoom_mode == 'fit_width':
+            self.update_idletasks()
+            available_width = self.winfo_width()
+            if available_width <= 1:
+                available_width = self.master.winfo_width() - 40
+            
+            # Obtener ancho real del PDF en puntos
+            try:
+                pdf_w, _ = pdf_tools.get_pdf_page_size(file_path, 1)
+            except:
+                pdf_w = 612.0
+            
+            # Pixel width at 150 DPI = points * 150 / 72
+            base_pixel_width = pdf_w * 150 / 72
+            
+            if available_width > 100:
+                self.zoom_level = (available_width - 50) / base_pixel_width
+            else:
+                self.zoom_level = 1.0
+            self.last_width = available_width
+
         self.load_thread = threading.Thread(target=load_incremental, daemon=True)
         self.load_thread.start()
+
+    def _on_container_resize(self, event):
+        """Maneja el redimensionamiento del contenedor"""
+        if self.zoom_mode == 'fit_width' and self.current_pdf:
+            new_width = event.width
+            if abs(new_width - self.last_width) < 10:
+                return
+            
+            self.last_width = new_width
+            
+            # Debounce para recarga (renderizado de alta calidad)
+            if self.resize_timer:
+                self.after_cancel(self.resize_timer)
+            self.resize_timer = self.after(400, self._apply_fit_width)
+
+    def _apply_fit_width(self):
+        """Calcula el zoom final y recarga si es necesario"""
+        if not self.current_pdf or self.zoom_mode != 'fit_width':
+            return
+            
+        available_width = self.winfo_width() - 50
+        if available_width < 100: return
+
+        # Obtener ancho real del PDF
+        try:
+            pdf_w, _ = pdf_tools.get_pdf_page_size(self.current_pdf, 1)
+        except:
+            pdf_w = 612.0
+            
+        base_pixel_width = pdf_w * 150 / 72
+        new_zoom = available_width / base_pixel_width
+        
+        # Si el zoom cambia significativamente, recargamos para calidad
+        if abs(new_zoom - self.zoom_level) > 0.05:
+            self.set_zoom(new_zoom, mode='fit_width')
     
     def _add_page_to_ui(self, img, page_num, total_pages):
         """Agrega una sola página a la interfaz de forma dinámica"""
@@ -251,9 +314,10 @@ class InteractivePDFViewer(ctk.CTkScrollableFrame):
         self.pages_data = []
         self.selected_pages = set()
     
-    def set_zoom(self, zoom):
+    def set_zoom(self, zoom, mode='fixed'):
         """Ajusta el nivel de zoom y recarga el PDF"""
         self.zoom_level = zoom
+        self.zoom_mode = mode
         if self.current_pdf:
             self.load_pdf(self.current_pdf)
     
@@ -271,11 +335,11 @@ class PDFEditorApp(ctk.CTk):
         super().__init__()
 
         self.title("Editor PDF Interactivo para Linux Mint")
-        self.geometry("1400x800")
+        self.geometry("1600x900")
 
         # Layout de grid - dos columnas
-        self.grid_columnconfigure(0, weight=2)  # Panel izquierdo (controles)
-        self.grid_columnconfigure(1, weight=3)  # Panel derecho (visor)
+        self.grid_columnconfigure(0, weight=1)  # Panel izquierdo (controles) - Más estrecho
+        self.grid_columnconfigure(1, weight=4)  # Panel derecho (visor) - Más ancho
         self.grid_rowconfigure(0, weight=1)
 
         # Panel izquierdo - Pestañas de controles
@@ -284,7 +348,7 @@ class PDFEditorApp(ctk.CTk):
 
         # Panel derecho - Visor de PDF
         self.viewer_frame = ctk.CTkFrame(self)
-        self.viewer_frame.grid(row=0, column=1, padx=(10, 20), pady=20, sticky="nsew")
+        self.viewer_frame.grid(row=0, column=1, padx=(5, 10), pady=10, sticky="nsew")
         self.viewer_frame.grid_rowconfigure(2, weight=1)
         self.viewer_frame.grid_columnconfigure(0, weight=1)
         
@@ -299,25 +363,33 @@ class PDFEditorApp(ctk.CTk):
         
         ctk.CTkLabel(zoom_frame, text="Zoom:").pack(side="left", padx=5)
         
-        zoom_50 = ctk.CTkButton(zoom_frame, text="50%", width=60, 
+        zoom_25 = ctk.CTkButton(zoom_frame, text="25%", width=50,
+                                 command=lambda: self.set_viewer_zoom(0.25))
+        zoom_25.pack(side="left", padx=2)
+
+        zoom_50 = ctk.CTkButton(zoom_frame, text="50%", width=50, 
                                 command=lambda: self.set_viewer_zoom(0.5))
         zoom_50.pack(side="left", padx=2)
         
-        zoom_75 = ctk.CTkButton(zoom_frame, text="75%", width=60,
+        zoom_75 = ctk.CTkButton(zoom_frame, text="75%", width=50,
                                 command=lambda: self.set_viewer_zoom(0.75))
         zoom_75.pack(side="left", padx=2)
         
-        zoom_100 = ctk.CTkButton(zoom_frame, text="100%", width=60,
+        zoom_100 = ctk.CTkButton(zoom_frame, text="100%", width=55,
                                  command=lambda: self.set_viewer_zoom(1.0))
         zoom_100.pack(side="left", padx=2)
         
-        zoom_150 = ctk.CTkButton(zoom_frame, text="150%", width=60,
+        zoom_150 = ctk.CTkButton(zoom_frame, text="150%", width=55,
                                  command=lambda: self.set_viewer_zoom(1.5))
         zoom_150.pack(side="left", padx=2)
+
+        zoom_fit = ctk.CTkButton(zoom_frame, text="Ajustar", width=70, fg_color="purple",
+                                 command=lambda: self.set_viewer_zoom(1.0, mode='fit_width'))
+        zoom_fit.pack(side="left", padx=10)
         
-        # Visor de PDF interactivo
-        self.pdf_viewer = InteractivePDFViewer(self.viewer_frame, width=500)
-        self.pdf_viewer.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        # Visor de PDF interactivo - Sin ancho fijo para permitir expansión máxima
+        self.pdf_viewer = InteractivePDFViewer(self.viewer_frame)
+        self.pdf_viewer.grid(row=2, column=0, sticky="nsew", padx=5, pady=(0, 5))
 
         # Crear pestañas
         self.tab_merge = self.tabview.add("Unir PDFs")
@@ -342,9 +414,9 @@ class PDFEditorApp(ctk.CTk):
         self.setup_delete_pages_tab()
         self.setup_reorder_tab()
     
-    def set_viewer_zoom(self, zoom):
+    def set_viewer_zoom(self, zoom, mode='fixed'):
         """Ajusta el zoom del visor"""
-        self.pdf_viewer.set_zoom(zoom)
+        self.pdf_viewer.set_zoom(zoom, mode=mode)
     
     def load_pdf_in_viewer(self, file_path):
         """Carga un PDF en el visor"""

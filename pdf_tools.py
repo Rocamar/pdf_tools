@@ -171,6 +171,19 @@ def get_pdf_page_count(file_path):
     reader = PdfReader(file_path)
     return len(reader.pages)
 
+def get_pdf_page_size(file_path, page_num=1):
+    """
+    Retorna el tamaño de una página en puntos (width, height).
+    """
+    reader = PdfReader(file_path)
+    if 1 <= page_num <= len(reader.pages):
+        page = reader.pages[page_num - 1]
+        # pypdf usa mediabox para dimensiones en puntos
+        width = float(page.mediabox.width)
+        height = float(page.mediabox.height)
+        return width, height
+    return 612.0, 792.0
+
 def pdf_page_to_image(file_path, page_num, dpi=150):
     """
     Convierte una página específica del PDF a imagen PIL.
