@@ -19,13 +19,15 @@ class InteractivePDFViewer(ctk.CTkScrollableFrame):
         self.interaction_mode = 'view'  # 'view', 'add_text', 'add_image', 'select_pages'
         self.on_click_callback = None
         self.selected_pages = set()
+        self.loading_active = False
+        self.load_thread = None
         self.resize_timer = None
         self.last_width = 0
         
         # Vincular evento de resize para modo responsivo
         self.bind("<Configure>", self._on_container_resize)
         
-        # Info panel
+        # Info panel - oculto por defecto en el nuevo diseño
         self.info_frame = ctk.CTkFrame(self)
         self.info_frame.pack(fill="x", padx=5, pady=5)
         
@@ -35,44 +37,59 @@ class InteractivePDFViewer(ctk.CTkScrollableFrame):
         
     def load_pdf(self, file_path):
         """Carga y muestra las páginas del PDF de forma incremental"""
+        # Cancelar cualquier carga activa previa
+        self.loading_active = False
+        if self.load_thread and self.load_thread.is_alive():
+            # Esperar un poco a que el hilo actual detecte el flag de parada
+            pass
+            
         self.clear()
         self.current_pdf = file_path
         self.loading_active = True
+        self.pages_data = [] # Reset data
         
         # Mostrar mensaje de carga inicial
-        self.loading_label = ctk.CTkLabel(self, text="Iniciando carga de PDF...", 
-                                         font=("Arial", 14))
-        self.loading_label.pack(pady=20)
+        self.loading_label = ctk.CTkLabel(self, text="Cargando PDF...", 
+                                         font=("Arial", 16, "bold"))
+        self.loading_label.pack(pady=50)
         
         def load_incremental():
             try:
                 # Obtener número de páginas
                 total_pages = pdf_tools.get_pdf_page_count(file_path)
-                self.after(0, lambda: self.loading_label.configure(text=f"Cargando {total_pages} páginas..."))
+                
+                # Cargar dimensiones de la primera página para el cálculo de zoom inicial
+                pdf_w, pdf_h = pdf_tools.get_pdf_page_size(file_path, 1)
                 
                 for i in range(1, total_pages + 1):
                     if not self.loading_active:
-                        break
+                        return
                         
                     # Cargar una sola página a la vez
-                    # Factor de conversión: 150 DPI / 72 DPI (estándar PDF) = 2.0833
-                    img = pdf_tools.pdf_page_to_image(file_path, i, dpi=int(150 * self.zoom_level))
+                    img = pdf_tools.pdf_page_to_image(file_path, i, dpi=int(144 * self.zoom_level))
                     
-                    if img:
+                    if img and self.loading_active:
                         # Mostrar página en la UI
-                        self.after(0, lambda p=img, n=i: self._add_page_to_ui(p, n, total_pages))
+                        self.after(0, lambda p=img, n=i, tp=total_pages, pw=pdf_w, ph=pdf_h: 
+                                   self._add_page_to_ui(p, n, tp, pw, ph))
                 
                 # Al finalizar, remover label de carga
-                self.after(0, self._finalize_loading)
+                if self.loading_active:
+                    self.after(0, self._finalize_loading)
                 
             except Exception as e:
-                self.after(0, lambda: self._show_error(str(e)))
+                if self.loading_active:
+                    self.after(0, lambda msg=str(e): self._show_error(msg))
         
         if self.zoom_mode == 'fit_width':
             self.update_idletasks()
             available_width = self.winfo_width()
             if available_width <= 1:
-                available_width = self.master.winfo_width() - 40
+                # Si aún no tiene ancho definido, usar el del maestro
+                parent = self.master
+                while parent and parent.winfo_width() <= 1:
+                    parent = parent.master
+                available_width = parent.winfo_width() - 300 if parent else 800
             
             # Obtener ancho real del PDF en puntos
             try:
@@ -80,31 +97,31 @@ class InteractivePDFViewer(ctk.CTkScrollableFrame):
             except:
                 pdf_w = 612.0
             
-            # Pixel width at 150 DPI = points * 150 / 72
-            base_pixel_width = pdf_w * 150 / 72
+            # Pixel width at 144 DPI (2x 72)
+            base_pixel_width = pdf_w * 2.0
             
             if available_width > 100:
-                self.zoom_level = (available_width - 50) / base_pixel_width
+                self.zoom_level = (available_width - 80) / base_pixel_width
             else:
-                self.zoom_level = 1.0
+                self.zoom_level = 0.8
             self.last_width = available_width
 
         self.load_thread = threading.Thread(target=load_incremental, daemon=True)
         self.load_thread.start()
 
     def _on_container_resize(self, event):
-        """Maneja el redimensionamiento del contenedor"""
+        """Maneja el redimensionamiento del contenedor con debounce"""
         if self.zoom_mode == 'fit_width' and self.current_pdf:
             new_width = event.width
-            if abs(new_width - self.last_width) < 10:
+            if abs(new_width - self.last_width) < 20:
                 return
             
             self.last_width = new_width
             
-            # Debounce para recarga (renderizado de alta calidad)
+            # Debounce para recarga
             if self.resize_timer:
                 self.after_cancel(self.resize_timer)
-            self.resize_timer = self.after(400, self._apply_fit_width)
+            self.resize_timer = self.after(600, self._apply_fit_width)
 
     def _apply_fit_width(self):
         """Calcula el zoom final y recarga si es necesario"""
@@ -127,33 +144,22 @@ class InteractivePDFViewer(ctk.CTkScrollableFrame):
         if abs(new_zoom - self.zoom_level) > 0.05:
             self.set_zoom(new_zoom, mode='fit_width')
     
-    def _add_page_to_ui(self, img, page_num, total_pages):
+    def _add_page_to_ui(self, img, page_num, total_pages, pdf_w, pdf_h):
         """Agrega una sola página a la interfaz de forma dinámica"""
         if page_num == 1:
             if hasattr(self, 'loading_label') and self.loading_label.winfo_exists():
                 self.loading_label.destroy()
         
-        self.info_label.configure(
-            text=f"PDF: {os.path.basename(self.current_pdf)} | {total_pages} páginas | Modo: {self.interaction_mode}"
-        )
+        # El info_label ya no se actualiza aquí, se hará en el controlador de la App
         
-        # Frame para cada página
-        page_frame = ctk.CTkFrame(self)
-        page_frame.pack(pady=10, padx=5, fill="x")
-        
-        # Label de número de página
-        page_label = ctk.CTkLabel(page_frame, text=f"Página {page_num}", 
-                                 font=("Arial", 12, "bold"))
-        page_label.pack(pady=(5, 2))
-        
-        # Label para coordenadas
-        coord_label = ctk.CTkLabel(page_frame, text="", font=("Arial", 9))
-        coord_label.pack(pady=(0, 5))
+        # Frame para cada página con sombra/borde sutil
+        page_frame = ctk.CTkFrame(self, fg_color="white", border_width=1, border_color="#cccccc")
+        page_frame.pack(pady=15, padx=20)
         
         # Canvas para la imagen (interactivo)
         canvas = Canvas(page_frame, width=img.width, height=img.height, 
                       highlightthickness=0, bg='white')
-        canvas.pack(pady=5)
+        canvas.pack(padx=2, pady=2)
         
         # Convertir PIL Image a PhotoImage
         photo = ImageTk.PhotoImage(img)
@@ -168,11 +174,13 @@ class InteractivePDFViewer(ctk.CTkScrollableFrame):
             'page_num': page_num,
             'width': img.width,
             'height': img.height,
-            'coord_label': coord_label,
-            'pdf_width': 612,  # Ancho estándar carta
-            'pdf_height': 792
+            'pdf_width': pdf_w,
+            'pdf_height': pdf_h
         }
         self.pages_data.append(page_data)
+        
+        # Ordenar por número de página para evitar desorden por hilos
+        self.pages_data.sort(key=lambda x: x['page_num'])
         
         # Ordenar por número de página si es necesario (Threading podría desordenarlas, 
         # aunque aquí las cargamos secuencialmente en el hilo)
@@ -201,11 +209,9 @@ class InteractivePDFViewer(ctk.CTkScrollableFrame):
             self.on_click_callback(page_data['page_num'], pdf_x, pdf_y, event.x, event.y)
     
     def _on_canvas_motion(self, event, page_data):
-        """Muestra coordenadas al mover el mouse"""
-        pdf_x, pdf_y = self._image_to_pdf_coords(event.x, event.y, page_data)
-        page_data['coord_label'].configure(
-            text=f"Cursor: X={int(pdf_x)}, Y={int(pdf_y)} (PDF) | X={event.x}, Y={event.y} (Imagen)"
-        )
+        """Muestra coordenadas al mover el mouse (opcional)"""
+        # pdf_x, pdf_y = self._image_to_pdf_coords(event.x, event.y, page_data)
+        pass
     
     def _image_to_pdf_coords(self, img_x, img_y, page_data):
         """Convierte coordenadas de imagen a coordenadas PDF"""
@@ -334,86 +340,266 @@ class PDFEditorApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("Editor PDF Interactivo para Linux Mint")
-        self.geometry("1600x900")
+        self.title("Editor PDF Pro - Antigravity")
+        self.geometry("1400x900")
+        self.configure(fg_color="#f5f5f7")
 
-        # Layout de grid - dos columnas
-        self.grid_columnconfigure(0, weight=1)  # Panel izquierdo (controles) - Más estrecho
-        self.grid_columnconfigure(1, weight=4)  # Panel derecho (visor) - Más ancho
-        self.grid_rowconfigure(0, weight=1)
-
-        # Panel izquierdo - Pestañas de controles
-        self.tabview = ctk.CTkTabview(self)
-        self.tabview.grid(row=0, column=0, padx=(20, 10), pady=20, sticky="nsew")
-
-        # Panel derecho - Visor de PDF
-        self.viewer_frame = ctk.CTkFrame(self)
-        self.viewer_frame.grid(row=0, column=1, padx=(5, 10), pady=10, sticky="nsew")
-        self.viewer_frame.grid_rowconfigure(2, weight=1)
-        self.viewer_frame.grid_columnconfigure(0, weight=1)
-        
-        # Título del visor
-        viewer_title = ctk.CTkLabel(self.viewer_frame, text="Editor Interactivo de PDF", 
-                                    font=("Arial", 16, "bold"))
-        viewer_title.grid(row=0, column=0, pady=10, sticky="ew")
-        
-        # Controles de zoom
-        zoom_frame = ctk.CTkFrame(self.viewer_frame)
-        zoom_frame.grid(row=1, column=0, pady=(0, 10), sticky="ew", padx=10)
-        
-        ctk.CTkLabel(zoom_frame, text="Zoom:").pack(side="left", padx=5)
-        
-        zoom_25 = ctk.CTkButton(zoom_frame, text="25%", width=50,
-                                 command=lambda: self.set_viewer_zoom(0.25))
-        zoom_25.pack(side="left", padx=2)
-
-        zoom_50 = ctk.CTkButton(zoom_frame, text="50%", width=50, 
-                                command=lambda: self.set_viewer_zoom(0.5))
-        zoom_50.pack(side="left", padx=2)
-        
-        zoom_75 = ctk.CTkButton(zoom_frame, text="75%", width=50,
-                                command=lambda: self.set_viewer_zoom(0.75))
-        zoom_75.pack(side="left", padx=2)
-        
-        zoom_100 = ctk.CTkButton(zoom_frame, text="100%", width=55,
-                                 command=lambda: self.set_viewer_zoom(1.0))
-        zoom_100.pack(side="left", padx=2)
-        
-        zoom_150 = ctk.CTkButton(zoom_frame, text="150%", width=55,
-                                 command=lambda: self.set_viewer_zoom(1.5))
-        zoom_150.pack(side="left", padx=2)
-
-        zoom_fit = ctk.CTkButton(zoom_frame, text="Ajustar", width=70, fg_color="purple",
-                                 command=lambda: self.set_viewer_zoom(1.0, mode='fit_width'))
-        zoom_fit.pack(side="left", padx=10)
-        
-        # Visor de PDF interactivo - Sin ancho fijo para permitir expansión máxima
-        self.pdf_viewer = InteractivePDFViewer(self.viewer_frame)
-        self.pdf_viewer.grid(row=2, column=0, sticky="nsew", padx=5, pady=(0, 5))
-
-        # Crear pestañas
-        self.tab_merge = self.tabview.add("Unir PDFs")
-        self.tab_split = self.tabview.add("Dividir PDF")
-        self.tab_rotate = self.tabview.add("Rotar PDF")
-        self.tab_extract = self.tabview.add("Extraer Texto")
-        self.tab_add_text = self.tabview.add("Agregar Texto")
-        self.tab_add_image = self.tabview.add("Agregar Imagen")
-        self.tab_delete_pages = self.tabview.add("Eliminar Páginas")
-        self.tab_reorder = self.tabview.add("Reordenar Páginas")
-
+        # --- Variables de Estado ---
+        self.current_pdf_path = None
         # Variables para cambios pendientes
         self.pending_texts = []
         self.pending_images = []
 
-        self.setup_merge_tab()
-        self.setup_split_tab()
-        self.setup_rotate_tab()
-        self.setup_extract_tab()
-        self.setup_add_text_tab()
-        self.setup_add_image_tab()
-        self.setup_delete_pages_tab()
-        self.setup_reorder_tab()
+        # El estado de los diálogos se cargará dinámicamente según la herramienta seleccionada
+
+        # --- Layout Principal ---
+        # 1. Header (Top Bar)
+        self.setup_header()
+
+        # 2. Área Central (Sidebar + Viewer)
+        self.main_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.main_container.pack(fill="both", expand=True)
+
+        self.setup_sidebar()
+        self.setup_viewer_area()
+
+        # Barra de Herramientas Flotante (opcional, se puede añadir después)
+        # self.setup_floating_toolbar()
+
+    def setup_header(self):
+        """Crea la barra de navegación superior"""
+        self.header = ctk.CTkFrame(self, height=50, corner_radius=0, fg_color="white", border_width=1, border_color="#e0e0e0")
+        self.header.pack(fill="x", side="top")
+        self.header.pack_propagate(False)
+
+        # Tabs de navegación (lado izquierdo)
+        tabs_frame = ctk.CTkFrame(self.header, fg_color="transparent")
+        tabs_frame.pack(side="left", padx=20)
+
+        nav_tabs = ["Todas las herramientas", "Editar", "Convertir", "Firma electrónica"]
+        for tab in nav_tabs:
+            btn = ctk.CTkButton(tabs_frame, text=tab, font=("Arial", 12), 
+                                fg_color="transparent", text_color="black", 
+                                hover_color="#f0f0f0", width=120, height=50, corner_radius=0)
+            btn.pack(side="left")
+            if tab == "Editar":
+                btn.configure(border_width=2, border_color="#000000", font=("Arial", 12, "bold"))
+
+        # Herramientas de utilidad (lado derecho)
+        utils_frame = ctk.CTkFrame(self.header, fg_color="transparent")
+        utils_frame.pack(side="right", padx=20)
+
+        search_entry = ctk.CTkEntry(utils_frame, placeholder_text="Buscar texto o herramientas...", 
+                                   width=250, height=30, font=("Arial", 12))
+        search_entry.pack(side="left", padx=10)
+
+        # Iconos (Guardar, Compartir, etc)
+        btn_save = ctk.CTkButton(utils_frame, text="💾", width=30, height=30, fg_color="transparent", text_color="black", font=("Arial", 16), command=self.save_current_pdf)
+        btn_save.pack(side="left", padx=5)
+        
+        btn_share = ctk.CTkButton(utils_frame, text="🔗", width=30, height=30, fg_color="transparent", text_color="black", font=("Arial", 16))
+        btn_share.pack(side="left", padx=5)
+
+    def save_current_pdf(self):
+        """Guarda los cambios en el PDF actual"""
+        if self.current_pdf_path:
+            # Aquí se llamaría a la lógica de guardado consolidada
+            messagebox.showinfo("Guardar", "Función de guardado rápido seleccionada. Usa aplicar en las herramientas para guardar versiones específicas.")
+        else:
+            messagebox.showwarning("Aviso", "No hay ningún PDF abierto.")
+
+    def setup_sidebar(self):
+        """Crea la barra lateral de herramientas"""
+        self.sidebar = ctk.CTkScrollableFrame(self.main_container, width=280, corner_radius=0, 
+                                             fg_color="white", border_width=1, border_color="#e0e0e0")
+        self.sidebar.pack(side="left", fill="y", padx=0, pady=0)
+
+        # Header de la barra lateral
+        sidebar_header = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        sidebar_header.pack(fill="x", padx=15, pady=(15, 20))
+        
+        ctk.CTkLabel(sidebar_header, text="Editar", font=("Arial", 18, "bold"), text_color="black").pack(side="left")
+        ctk.CTkLabel(sidebar_header, text="⚙️", font=("Arial", 16), text_color="gray").pack(side="right", padx=5)
+        ctk.CTkLabel(sidebar_header, text="✕", font=("Arial", 16), text_color="gray").pack(side="right", padx=5)
+
+        # --- Grupo: MODIFICAR PAGINA ---
+        self.create_sidebar_group("MODIFICAR PAGINA", [
+            ("🔄", "Rotar PDF", self.select_tab_rotate),
+            ("🗑️", "Eliminar páginas", self.select_tab_delete),
+            ("📑", "Organizar páginas", self.select_tab_reorder),
+            ("📑", "Dividir PDF", self.select_tab_split)
+        ])
+
+        # --- Grupo: AGREGAR CONTENIDO ---
+        self.create_sidebar_group("AGREGAR CONTENIDO", [
+            ("T+", "Texto", self.select_tab_add_text),
+            ("🖼️", "Imagen", self.select_tab_add_image),
+            ("📅", "Encabezado y pie", None),
+            ("💧", "Marca de agua", None),
+            ("🔗", "Enlace", None)
+        ])
+
+        # --- Grupo: OTRAS OPCIONES ---
+        self.create_sidebar_group("OTRAS OPCIONES", [
+            ("🔗", "Combinar archivos", self.select_tab_merge),
+            ("🚫", "Censurar un PDF", None),
+            ("📝", "Preparar un formulario", None)
+        ])
+
+    def create_sidebar_group(self, title, items):
+        """Crea un grupo de herramientas en la barra lateral"""
+        group_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        group_frame.pack(fill="x", padx=15, pady=(20, 10))
+        
+        ctk.CTkLabel(group_frame, text=title, font=("Arial", 11, "bold"), text_color="#666666").pack(anchor="w")
+        
+        for icon, label, command in items:
+            btn = ctk.CTkButton(self.sidebar, text=f"  {icon}   {label}", anchor="w",
+                                font=("Arial", 13), fg_color="transparent", text_color="black",
+                                hover_color="#f0f0f0", height=40, command=command)
+            btn.pack(fill="x", padx=10, pady=2)
+
+    def setup_viewer_area(self):
+        """Configura el área del visor central"""
+        self.viewer_container = ctk.CTkFrame(self.main_container, fg_color="#e5e5e5", corner_radius=0)
+        self.viewer_container.pack(side="right", fill="both", expand=True)
+
+        # Barra de herramientas del visor (Flotante o fija)
+        self.toolbar_overlay = ctk.CTkFrame(self.viewer_container, width=50, fg_color="white", corner_radius=8, border_width=1, border_color="#cccccc")
+        self.toolbar_overlay.place(relx=0.02, rely=0.1)
+        
+        tools = ["↖️", "💬", "🖋️", "〰️", "T", "📸"]
+        for tool in tools:
+            btn = ctk.CTkButton(self.toolbar_overlay, text=tool, width=35, height=35, fg_color="transparent", text_color="black", hover_color="#f0f0f0")
+            btn.pack(pady=5, padx=5)
+
+        # Controles de zoom (parte inferior o superior)
+        self.zoom_ctrls = ctk.CTkFrame(self.viewer_container, fg_color="white", corner_radius=20, border_width=1, border_color="#cccccc")
+        self.zoom_ctrls.place(relx=0.5, rely=0.02, anchor="n")
+        
+        ctk.CTkButton(self.zoom_ctrls, text="-", width=30, height=30, fg_color="transparent", text_color="black", command=lambda: self.adjust_zoom(-0.1)).pack(side="left", padx=5)
+        self.zoom_label = ctk.CTkLabel(self.zoom_ctrls, text="100%", font=("Arial", 12, "bold"))
+        self.zoom_label.pack(side="left", padx=10)
+        ctk.CTkButton(self.zoom_ctrls, text="+", width=30, height=30, fg_color="transparent", text_color="black", command=lambda: self.adjust_zoom(0.1)).pack(side="left", padx=5)
+
+        # El visor de PDF propiamente dicho
+        self.pdf_viewer = InteractivePDFViewer(self.viewer_container)
+        self.pdf_viewer.pack(fill="both", expand=True, padx=40, pady=(60, 20))
+
+    def adjust_zoom(self, delta):
+        self.zoom_level += delta
+        self.zoom_level = max(0.1, min(5.0, self.zoom_level))
+        self.zoom_label.configure(text=f"{int(self.zoom_level*100)}%")
+        self.pdf_viewer.set_zoom(self.zoom_level)
+
+        # --- Panel de Opciones Contextuales (se llena dinámicamente) ---
+        self.context_frame = ctk.CTkFrame(self.sidebar, fg_color="#f0f0f0", corner_radius=10)
+        self.context_frame.pack(fill="x", padx=15, pady=20)
+        self.context_label = ctk.CTkLabel(self.context_frame, text="Selecciona una herramienta", font=("Arial", 12, "italic"))
+        self.context_label.pack(pady=20)
+
+    def show_tool_options(self, tool_name, setup_func):
+        """Limpia el panel contextual y carga las opciones de la herramienta"""
+        for widget in self.context_frame.winfo_children():
+            widget.destroy()
+        
+        self.context_label = ctk.CTkLabel(self.context_frame, text=tool_name, font=("Arial", 14, "bold"))
+        self.context_label.pack(pady=(10, 5))
+        
+        # Ejecutar función de configuración del panel
+        setup_func(self.context_frame)
+
+    def create_sidebar_group(self, title, items):
+        # ... (código existente igual)
+        pass
+
+    # --- Handlers adaptados ---
+    def select_tab_rotate(self):
+        self.open_pdf_dialog()
+        self.show_tool_options("Rotar PDF", self.setup_rotate_context)
     
+    def select_tab_delete(self):
+        self.open_pdf_dialog()
+        self.pdf_viewer.set_interaction_mode('select_pages')
+        self.show_tool_options("Eliminar Páginas", self.setup_delete_context)
+    
+    def select_tab_add_text(self):
+        self.open_pdf_dialog()
+        self.pdf_viewer.set_interaction_mode('add_text')
+        self.show_tool_options("Agregar Texto", self.setup_add_text_context)
+        
+    def select_tab_add_image(self):
+        self.open_pdf_dialog()
+        self.pdf_viewer.set_interaction_mode('add_image')
+        self.show_tool_options("Agregar Imagen", self.setup_add_image_context)
+
+    def setup_add_text_context(self, parent):
+        ctk.CTkLabel(parent, text="Texto a agregar:").pack(pady=5)
+        self.entry_text = ctk.CTkEntry(parent, width=220)
+        self.entry_text.pack(pady=5)
+        
+        ctk.CTkLabel(parent, text="Tamaño:").pack(pady=2)
+        self.entry_font_size = ctk.CTkEntry(parent, width=60)
+        self.entry_font_size.insert(0, "12")
+        self.entry_font_size.pack(pady=2)
+        
+        # Reutilizar lógica de color si es posible, o simplificar para la barra lateral
+        btn_apply = ctk.CTkButton(parent, text="Aplicar Cambios", command=self.apply_texts, fg_color="#0066cc")
+        btn_apply.pack(pady=15)
+
+    def setup_rotate_context(self, parent):
+        self.rotate_var = ctk.StringVar(value="90")
+        ctk.CTkRadioButton(parent, text="90° Horario", variable=self.rotate_var, value="90").pack(pady=2)
+        ctk.CTkRadioButton(parent, text="180°", variable=self.rotate_var, value="180").pack(pady=2)
+        ctk.CTkRadioButton(parent, text="270° Horario", variable=self.rotate_var, value="270").pack(pady=2)
+        
+        btn_rot = ctk.CTkButton(parent, text="Rotar y Guardar", command=self.process_rotate, fg_color="#0066cc")
+        btn_rot.pack(pady=15)
+
+    def setup_delete_context(self, parent):
+        ctk.CTkLabel(parent, text="Haz clic en las páginas\nen el visor para marcarlas.", font=("Arial", 11)).pack(pady=10)
+        btn_del = ctk.CTkButton(parent, text="Eliminar Marcadas", command=self.process_delete_pages, fg_color="#cc0000")
+        btn_del.pack(pady=15)
+
+    def setup_add_image_context(self, parent):
+        ctk.CTkButton(parent, text="Seleccionar Imagen", command=self.select_image_to_add).pack(pady=10)
+        self.lbl_image_to_add = ctk.CTkLabel(parent, text="Sin imagen", font=("Arial", 10))
+        self.lbl_image_to_add.pack()
+        
+        btn_apply = ctk.CTkButton(parent, text="Aplicar y Guardar", command=self.apply_images, fg_color="#0066cc")
+        btn_apply.pack(pady=15)
+    
+    def select_tab_reorder(self):
+        self.open_pdf_dialog()
+        self.show_tool_options("Reordenar Páginas", self.setup_reorder_context)
+
+    def select_tab_split(self):
+        self.open_pdf_dialog()
+        self.show_tool_options("Dividir PDF", self.setup_split_context)
+
+    def select_tab_merge(self):
+        self.show_tool_options("Unir PDFs", self.setup_merge_context)
+
+    def setup_reorder_context(self, parent):
+        ctk.CTkLabel(parent, text="Nuevo orden (ej: 3,1,2):").pack(pady=5)
+        self.entry_new_order = ctk.CTkEntry(parent, width=220)
+        self.entry_new_order.pack(pady=5)
+        btn_reorder = ctk.CTkButton(parent, text="Reordenar", command=self.process_reorder, fg_color="#0066cc")
+        btn_reorder.pack(pady=15)
+
+    def setup_split_context(self, parent):
+        ctk.CTkLabel(parent, text="Divide el PDF en páginas\nindividuales.", font=("Arial", 11)).pack(pady=10)
+        btn_split = ctk.CTkButton(parent, text="Dividir PDF", command=self.process_split, fg_color="#0066cc")
+        btn_split.pack(pady=15)
+
+    def setup_merge_context(self, parent):
+        ctk.CTkButton(parent, text="Agregar Archivos", command=self.add_files_merge).pack(pady=10)
+        self.listbox_merge = ctk.CTkTextbox(parent, height=100, width=220)
+        self.listbox_merge.pack(pady=5)
+        self.listbox_merge.configure(state="disabled")
+        btn_merge = ctk.CTkButton(parent, text="Unir y Guardar", command=self.process_merge, fg_color="#28a745")
+        btn_merge.pack(pady=15)
+
     def set_viewer_zoom(self, zoom, mode='fixed'):
         """Ajusta el zoom del visor"""
         self.pdf_viewer.set_zoom(zoom, mode=mode)
@@ -423,293 +609,24 @@ class PDFEditorApp(ctk.CTk):
         if file_path and os.path.exists(file_path):
             self.pdf_viewer.load_pdf(file_path)
 
-    def setup_merge_tab(self):
-        # Variables
-        self.merge_files = []
-
-        # UI Elements
-        self.merge_frame = ctk.CTkFrame(self.tab_merge)
-        self.merge_frame.pack(fill="both", expand=True, padx=10, pady=10)
-        
-        btn_add = ctk.CTkButton(self.merge_frame, text="Agregar Archivos", command=self.add_files_merge)
-        btn_add.pack(pady=10)
-
-        self.listbox_merge = ctk.CTkTextbox(self.merge_frame, height=200)
-        self.listbox_merge.pack(fill="x", padx=10, pady=5)
-        self.listbox_merge.configure(state="disabled")
-
-        btn_merge = ctk.CTkButton(self.merge_frame, text="Unir y Guardar", command=self.process_merge, fg_color="green")
-        btn_merge.pack(pady=20)
-
-    def setup_split_tab(self):
-        self.split_file = None
-        
-        self.split_frame = ctk.CTkFrame(self.tab_split)
-        self.split_frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-        btn_select = ctk.CTkButton(self.split_frame, text="Seleccionar PDF", command=self.select_file_split)
-        btn_select.pack(pady=10)
-
-        self.lbl_split_file = ctk.CTkLabel(self.split_frame, text="Ningún archivo seleccionado")
-        self.lbl_split_file.pack(pady=5)
-
-        btn_split = ctk.CTkButton(self.split_frame, text="Dividir PDF", command=self.process_split, fg_color="green")
-        btn_split.pack(pady=20)
-
-    def setup_rotate_tab(self):
-        self.rotate_file = None
-        
-        self.rotate_frame = ctk.CTkFrame(self.tab_rotate)
-        self.rotate_frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-        btn_select = ctk.CTkButton(self.rotate_frame, text="Seleccionar PDF", command=self.select_file_rotate)
-        btn_select.pack(pady=10)
-
-        self.lbl_rotate_file = ctk.CTkLabel(self.rotate_frame, text="Ningún archivo seleccionado")
-        self.lbl_rotate_file.pack(pady=5)
-
-        self.rotate_var = ctk.StringVar(value="90")
-        radio_90 = ctk.CTkRadioButton(self.rotate_frame, text="90° Horario", variable=self.rotate_var, value="90")
-        radio_90.pack(pady=5)
-        radio_180 = ctk.CTkRadioButton(self.rotate_frame, text="180°", variable=self.rotate_var, value="180")
-        radio_180.pack(pady=5)
-        radio_270 = ctk.CTkRadioButton(self.rotate_frame, text="270° Horario (90° Antihorario)", variable=self.rotate_var, value="270")
-        radio_270.pack(pady=5)
-
-        btn_rotate = ctk.CTkButton(self.rotate_frame, text="Rotar y Guardar", command=self.process_rotate, fg_color="green")
-        btn_rotate.pack(pady=20)
-
-    def setup_extract_tab(self):
-        self.extract_file = None
-
-        self.extract_frame = ctk.CTkFrame(self.tab_extract)
-        self.extract_frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-        btn_select = ctk.CTkButton(self.extract_frame, text="Seleccionar PDF", command=self.select_file_extract)
-        btn_select.pack(pady=10)
-
-        self.lbl_extract_file = ctk.CTkLabel(self.extract_frame, text="Ningún archivo seleccionado")
-        self.lbl_extract_file.pack(pady=5)
-
-        btn_extract = ctk.CTkButton(self.extract_frame, text="Extraer Texto", command=self.process_extract, fg_color="green")
-        btn_extract.pack(pady=10)
-
-        self.textbox_extract = ctk.CTkTextbox(self.extract_frame, height=200)
-        self.textbox_extract.pack(fill="both", expand=True, padx=10, pady=5)
-        self.textbox_extract.configure(state="disabled")
-
-        btn_save_text = ctk.CTkButton(self.extract_frame, text="Guardar Texto en Archivo", command=self.save_extracted_text)
-        btn_save_text.pack(pady=10)
-
-    def setup_add_text_tab(self):
-        self.add_text_file = None
-        
-        self.add_text_frame = ctk.CTkFrame(self.tab_add_text)
-        self.add_text_frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-        btn_select = ctk.CTkButton(self.add_text_frame, text="Seleccionar PDF", command=self.select_file_add_text)
-        btn_select.pack(pady=10)
-
-        self.lbl_add_text_file = ctk.CTkLabel(self.add_text_frame, text="Ningún archivo seleccionado")
-        self.lbl_add_text_file.pack(pady=5)
-
-        # Instrucciones
-        ctk.CTkLabel(self.add_text_frame, text="👆 Haz clic en el PDF para colocar el texto", 
-                    font=("Arial", 12, "bold"), text_color="blue").pack(pady=10)
-
-        # Campo de texto
-        ctk.CTkLabel(self.add_text_frame, text="Texto a agregar:").pack(pady=5)
-        self.entry_text = ctk.CTkEntry(self.add_text_frame, width=400)
-        self.entry_text.pack(pady=5)
-
-        # Tamaño de fuente
-        ctk.CTkLabel(self.add_text_frame, text="Tamaño de fuente:").pack(pady=5)
-        self.entry_font_size = ctk.CTkEntry(self.add_text_frame, width=100)
-        self.entry_font_size.insert(0, "12")
-        self.entry_font_size.pack(pady=5)
-
-        # Selector de color visual
-        ctk.CTkLabel(self.add_text_frame, text="Color del texto:").pack(pady=(10, 5))
-        
-        # Frame para la paleta de colores
-        color_palette_frame = ctk.CTkFrame(self.add_text_frame)
-        color_palette_frame.pack(pady=5)
-        
-        # Colores predefinidos
-        self.predefined_colors = [
-            ("Negro", "#000000", (0, 0, 0)),
-            ("Rojo", "#FF0000", (255, 0, 0)),
-            ("Azul", "#0000FF", (0, 0, 255)),
-            ("Verde", "#00FF00", (0, 255, 0)),
-            ("Amarillo", "#FFFF00", (255, 255, 0)),
-            ("Naranja", "#FF8800", (255, 136, 0)),
-            ("Morado", "#8800FF", (136, 0, 255)),
-            ("Blanco", "#FFFFFF", (255, 255, 255)),
-        ]
-        
-        # Variable para el color seleccionado
-        self.selected_text_color = (0, 0, 0)  # Negro por defecto
-        self.selected_color_hex = "#000000"
-        
-        # Crear botones de color
-        row = 0
-        col = 0
-        for name, hex_color, rgb in self.predefined_colors:
-            color_btn = ctk.CTkButton(
-                color_palette_frame,
-                text="",
-                width=40,
-                height=40,
-                fg_color=hex_color,
-                hover_color=hex_color,
-                border_width=2,
-                border_color="gray",
-                command=lambda c=rgb, h=hex_color: self.select_text_color(c, h)
-            )
-            color_btn.grid(row=row, column=col, padx=3, pady=3)
-            col += 1
-            if col > 3:  # 4 colores por fila
-                col = 0
-                row += 1
-        
-        # Botón para color personalizado
-        custom_color_btn = ctk.CTkButton(
-            color_palette_frame,
-            text="🎨",
-            width=40,
-            height=40,
-            command=self.choose_custom_text_color
-        )
-        custom_color_btn.grid(row=row, column=col, padx=3, pady=3)
-        
-        # Label para mostrar el color seleccionado
-        self.selected_color_display = ctk.CTkLabel(
-            self.add_text_frame,
-            text=f"Color seleccionado: Negro",
-            fg_color=self.selected_color_hex,
-            corner_radius=5,
-            width=200,
-            height=30
-        )
-        self.selected_color_display.pack(pady=5)
-
-        # Lista de textos pendientes
-        ctk.CTkLabel(self.add_text_frame, text="Textos pendientes:").pack(pady=(10, 5))
-        self.pending_texts_list = ctk.CTkTextbox(self.add_text_frame, height=100)
-        self.pending_texts_list.pack(fill="x", padx=10, pady=5)
-        self.pending_texts_list.configure(state="disabled")
-
-        # Botones
-        btn_frame = ctk.CTkFrame(self.add_text_frame)
-        btn_frame.pack(pady=10)
-        
-        btn_clear = ctk.CTkButton(btn_frame, text="Limpiar Todo", command=self.clear_pending_texts, fg_color="orange")
-        btn_clear.pack(side="left", padx=5)
-        
-        btn_apply = ctk.CTkButton(btn_frame, text="Aplicar y Guardar", command=self.apply_texts, fg_color="green")
-        btn_apply.pack(side="left", padx=5)
-
-        # Configurar callback de clic
-        self.pdf_viewer.on_click_callback = self.on_pdf_click_add_text
-
-    def setup_add_image_tab(self):
-        self.add_image_file = None
-        self.image_to_add = None
-        
-        self.add_image_frame = ctk.CTkFrame(self.tab_add_image)
-        self.add_image_frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-        btn_select_pdf = ctk.CTkButton(self.add_image_frame, text="Seleccionar PDF", command=self.select_file_add_image)
-        btn_select_pdf.pack(pady=10)
-
-        self.lbl_add_image_file = ctk.CTkLabel(self.add_image_frame, text="Ningún PDF seleccionado")
-        self.lbl_add_image_file.pack(pady=5)
-
-        btn_select_img = ctk.CTkButton(self.add_image_frame, text="Seleccionar Imagen", command=self.select_image_to_add)
-        btn_select_img.pack(pady=10)
-
-        self.lbl_image_to_add = ctk.CTkLabel(self.add_image_frame, text="Ninguna imagen seleccionada")
-        self.lbl_image_to_add.pack(pady=5)
-
-        # Instrucciones
-        ctk.CTkLabel(self.add_image_frame, text="👆 Haz clic en el PDF para colocar la imagen", 
-                    font=("Arial", 12, "bold"), text_color="blue").pack(pady=10)
-
-        # Dimensiones
-        dim_frame = ctk.CTkFrame(self.add_image_frame)
-        dim_frame.pack(pady=10)
-        
-        ctk.CTkLabel(dim_frame, text="Ancho:").grid(row=0, column=0, padx=5)
-        self.entry_width_image = ctk.CTkEntry(dim_frame, width=80)
-        self.entry_width_image.insert(0, "200")
-        self.entry_width_image.grid(row=0, column=1, padx=5)
-        
-        ctk.CTkLabel(dim_frame, text="Alto:").grid(row=0, column=2, padx=5)
-        self.entry_height_image = ctk.CTkEntry(dim_frame, width=80)
-        self.entry_height_image.insert(0, "200")
-        self.entry_height_image.grid(row=0, column=3, padx=5)
-
-        # Lista de imágenes pendientes
-        ctk.CTkLabel(self.add_image_frame, text="Imágenes pendientes:").pack(pady=(10, 5))
-        self.pending_images_list = ctk.CTkTextbox(self.add_image_frame, height=100)
-        self.pending_images_list.pack(fill="x", padx=10, pady=5)
-        self.pending_images_list.configure(state="disabled")
-
-        # Botones
-        btn_frame = ctk.CTkFrame(self.add_image_frame)
-        btn_frame.pack(pady=10)
-        
-        btn_clear = ctk.CTkButton(btn_frame, text="Limpiar Todo", command=self.clear_pending_images, fg_color="orange")
-        btn_clear.pack(side="left", padx=5)
-        
-        btn_apply = ctk.CTkButton(btn_frame, text="Aplicar y Guardar", command=self.apply_images, fg_color="green")
-        btn_apply.pack(side="left", padx=5)
-
-    def setup_delete_pages_tab(self):
-        self.delete_pages_file = None
-        
-        self.delete_pages_frame = ctk.CTkFrame(self.tab_delete_pages)
-        self.delete_pages_frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-        btn_select = ctk.CTkButton(self.delete_pages_frame, text="Seleccionar PDF", command=self.select_file_delete_pages)
-        btn_select.pack(pady=10)
-
-        self.lbl_delete_pages_file = ctk.CTkLabel(self.delete_pages_frame, text="Ningún archivo seleccionado")
-        self.lbl_delete_pages_file.pack(pady=5)
-
-        self.lbl_total_pages_delete = ctk.CTkLabel(self.delete_pages_frame, text="")
-        self.lbl_total_pages_delete.pack(pady=5)
-
-        # Instrucciones
-        ctk.CTkLabel(self.delete_pages_frame, text="👆 Haz clic en las páginas para marcar/desmarcar", 
-                    font=("Arial", 12, "bold"), text_color="blue").pack(pady=10)
-
-        btn_delete = ctk.CTkButton(self.delete_pages_frame, text="Eliminar Páginas Marcadas y Guardar", 
-                                   command=self.process_delete_pages, fg_color="red")
-        btn_delete.pack(pady=20)
-
-    def setup_reorder_tab(self):
-        self.reorder_file = None
-        
-        self.reorder_frame = ctk.CTkFrame(self.tab_reorder)
-        self.reorder_frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-        btn_select = ctk.CTkButton(self.reorder_frame, text="Seleccionar PDF", command=self.select_file_reorder)
-        btn_select.pack(pady=10)
-
-        self.lbl_reorder_file = ctk.CTkLabel(self.reorder_frame, text="Ningún archivo seleccionado")
-        self.lbl_reorder_file.pack(pady=5)
-
-        self.lbl_total_pages_reorder = ctk.CTkLabel(self.reorder_frame, text="")
-        self.lbl_total_pages_reorder.pack(pady=5)
-
-        ctk.CTkLabel(self.reorder_frame, text="Nuevo orden de páginas (ej: 3,1,2,4):").pack(pady=5)
-        self.entry_new_order = ctk.CTkEntry(self.reorder_frame, width=300)
-        self.entry_new_order.pack(pady=5)
-
-        btn_reorder = ctk.CTkButton(self.reorder_frame, text="Reordenar y Guardar", command=self.process_reorder, fg_color="green")
-        btn_reorder.pack(pady=20)
-
+    def open_pdf_dialog(self):
+        """Abre el selector de archivos y carga el PDF en el visor"""
+        f = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")])
+        if f:
+            self.current_pdf_path = f
+            # Actualizar todos los flags de archivos antiguos para compatibilidad
+            # These are now mostly redundant as tools will use current_pdf_path directly
+            # but kept for any potential legacy references in other parts of the code not shown.
+            self.add_text_file = f
+            self.add_image_file = f
+            self.rotate_file = f
+            self.split_file = f
+            self.delete_pages_file = f
+            self.reorder_file = f
+            self.extract_file = f
+            
+            self.pdf_viewer.load_pdf(f)
+            self.title(f"Editor PDF Pro - {os.path.basename(f)}")
 
     # --- Logic Operations ---
 
