@@ -127,7 +127,8 @@ class InteractivePDFViewer(ctk.CTkScrollableFrame):
         if not self.current_pdf or self.zoom_mode != 'fit_width':
             return
             
-        available_width = self.winfo_width() - 50
+        self.update_idletasks()
+        available_width = self.winfo_width() - 80
         if available_width < 100: return
 
         # Obtener ancho real del PDF
@@ -136,7 +137,8 @@ class InteractivePDFViewer(ctk.CTkScrollableFrame):
         except:
             pdf_w = 612.0
             
-        base_pixel_width = pdf_w * 150 / 72
+        # Usamos el mismo factor que en load_pdf (144 DPI = 2.0x 72 DPI)
+        base_pixel_width = pdf_w * 2.0
         new_zoom = available_width / base_pixel_width
         
         # Si el zoom cambia significativamente, recargamos para calidad
@@ -280,6 +282,28 @@ class InteractivePDFViewer(ctk.CTkScrollableFrame):
         """Limpia todos los overlays"""
         for page_data in self.pages_data:
             page_data['canvas'].delete('overlay')
+            page_data['canvas'].delete('search_highlight')
+
+    def highlight_search_result(self, page_num, rect):
+        """Resalta un área de búsqueda en el visor"""
+        if page_num <= len(self.pages_data):
+            page_data = self.pages_data[page_num - 1]
+            canvas = page_data['canvas']
+            
+            x, y, w, h = rect
+            # Convertir coordenadas PDF a coordenadas de imagen
+            # En PDF (x,y) es esquina inferior izquierda. Para el canvas necesitamos esquina superior izquierda.
+            img_x, img_y = self._pdf_to_image_coords(x, y + h, page_data)
+            
+            # Convertir dimensiones
+            scale_x = page_data['width'] / page_data['pdf_width']
+            scale_y = page_data['height'] / page_data['pdf_height']
+            img_w = w * scale_x
+            img_h = h * scale_y
+            
+            # Dibujar rectángulo amarillo semi-transparente
+            canvas.create_rectangle(img_x, img_y, img_x + img_w, img_y + img_h,
+                                  fill='#ffff00', outline='#cc9900', stipple='gray50', width=1, tags='search_highlight')
     
     def toggle_page_selection(self, page_num):
         """Marca/desmarca una página para eliminación"""
@@ -330,10 +354,31 @@ class InteractivePDFViewer(ctk.CTkScrollableFrame):
     def set_interaction_mode(self, mode):
         """Cambia el modo de interacción"""
         self.interaction_mode = mode
-        if self.current_pdf:
+        if hasattr(self, 'info_label') and self.current_pdf:
             self.info_label.configure(
                 text=f"PDF: {os.path.basename(self.current_pdf)} | {len(self.pages_data)} páginas | Modo: {mode}"
             )
+
+    def see(self, widget):
+        """Desplaza el scroll para mostrar el widget especificado de forma robusta"""
+        try:
+            self.update_idletasks()
+            # CTkScrollableFrame tiene un _parent_canvas interno y un _container interno
+            canvas = self._parent_canvas
+            
+            # Obtener posición relativa del widget dentro del contenedor interno
+            widget_y = widget.winfo_y()
+            total_height = self._get_scroll_height()
+            
+            if total_height > 0:
+                fraction = widget_y / total_height
+                canvas.yview_moveto(fraction)
+        except Exception as e:
+            print(f"Error en viewer.see: {e}")
+
+    def _get_scroll_height(self):
+        """Retorna la altura total del contenido dentro del scrollable frame"""
+        return self._container.winfo_height()
 
 
 class PDFEditorApp(ctk.CTk):
@@ -350,6 +395,7 @@ class PDFEditorApp(ctk.CTk):
         # Variables para cambios pendientes
         self.pending_texts = []
         self.pending_images = []
+        self.merge_files = []
 
         # El estado de los diálogos se cargará dinámicamente según la herramienta seleccionada
 
@@ -368,8 +414,67 @@ class PDFEditorApp(ctk.CTk):
         self.pdf_viewer.zoom_mode = 'fit_width'
         self.switch_tab("Editar")
 
-        # Barra de Herramientas Flotante (opcional, se puede añadir después)
-        # self.setup_floating_toolbar()
+        # Habilitar copiar y pegar estándar ( shortcuts )
+        self._enable_standard_shortcuts()
+
+    def _enable_standard_shortcuts(self):
+        """Habilita Ctrl+C, Ctrl+V, etc. en widgets de entrada"""
+        self.bind_all("<Control-c>", self._on_copy)
+        self.bind_all("<Control-v>", self._on_paste)
+        self.bind_all("<Control-x>", self._on_cut)
+        self.bind_all("<Control-a>", self._on_select_all)
+
+    def _on_copy(self, event):
+        widget = self.focus_get()
+        if not widget: return
+        try:
+            if hasattr(widget, "event_generate"):
+                widget.event_generate("<<Copy>>")
+        except:
+            pass
+    
+    def _on_paste(self, event):
+        widget = self.focus_get()
+        if not widget: return
+        try:
+            # Intentar primero con el evento estándar
+            if hasattr(widget, "event_generate"):
+                widget.event_generate("<<Paste>>")
+            
+            # Fallback para CTkEntry de CustomTkinter si el evento no funciona
+            # (A veces el foco está en el widget interno de tkinter)
+            import tkinter as tk
+            if isinstance(widget, (tk.Entry, tk.Text)):
+                try:
+                    text = self.clipboard_get()
+                    if text:
+                        widget.insert(tk.INSERT, text)
+                except:
+                    pass
+        except:
+            pass
+
+    def _on_cut(self, event):
+        widget = self.focus_get()
+        if not widget: return
+        try:
+            if hasattr(widget, "event_generate"):
+                widget.event_generate("<<Cut>>")
+        except:
+            pass
+
+    def _on_select_all(self, event):
+        widget = self.focus_get()
+        if not widget: return
+        try:
+            if hasattr(widget, "tag_add"): # Textbox
+                widget.tag_add("sel", "1.0", "end")
+            elif hasattr(widget, "select_range"): # Entry
+                widget.select_range(0, 'end')
+                widget.icursor('end')
+        except:
+            pass
+        return "break"
 
     def setup_header(self):
         """Crea la barra de navegación superior"""
@@ -408,14 +513,25 @@ class PDFEditorApp(ctk.CTk):
         btn_share.pack(side="left", padx=5)
 
     def save_current_pdf(self):
-        """Guarda los cambios en el PDF actual"""
+        """Guarda los cambios en el PDF actual a una nueva ubicación"""
         if self.current_pdf_path:
-            messagebox.showinfo("Guardar", "Función de guardado rápido seleccionada. Usa 'Aplicar' en las herramientas para guardar versiones específicas.")
+            output = filedialog.asksaveasfilename(defaultextension=".pdf", 
+                                                 filetypes=[("PDF files", "*.pdf")],
+                                                 initialfile=os.path.basename(self.current_pdf_path))
+            if output:
+                try:
+                    import shutil
+                    shutil.copy2(self.current_pdf_path, output)
+                    messagebox.showinfo("Éxito", f"PDF guardado correctamente en: {output}")
+                    self.current_pdf_path = output
+                    self.title(f"Editor PDF Pro - {os.path.basename(output)}")
+                except Exception as e:
+                    messagebox.showerror("Error", f"No se pudo guardar: {str(e)}")
         else:
             messagebox.showwarning("Aviso", "No hay ningún PDF abierto.")
 
     def perform_search(self):
-        """Busca texto en el PDF actual y desplaza la vista"""
+        """Busca texto en el PDF actual y resalta todas las posiciones en el visor"""
         query = self.search_entry.get().strip()
         if not query:
             return
@@ -425,25 +541,33 @@ class PDFEditorApp(ctk.CTk):
             return
 
         try:
-            from pypdf import PdfReader
-            reader = PdfReader(self.current_pdf_path)
-            found_page = -1
+            # Limpiar resaltados anteriores en todo el visor
+            self.pdf_viewer.clear_overlays()
             
-            for i, page in enumerate(reader.pages):
-                text = page.extract_text()
-                if query.lower() in text.lower():
-                    found_page = i + 1
-                    break
+            # Usar la nueva función que devuelve todos los matches
+            matches = pdf_tools.find_text_coordinates(self.current_pdf_path, query)
             
-            if found_page != -1:
-                # Buscar el frame de la página en el visor
+            if matches:
+                # Agrupar matches por página para optimizar (aunque highlight_search_result es rápido)
+                from collections import defaultdict
+                page_groups = defaultdict(list)
+                for m in matches:
+                    page_groups[m['page']].append(m['rect'])
+                
+                # Aplicar resaltados
+                for page_num, rects in page_groups.items():
+                    # El visor ya tiene la lógica para dibujar en el canvas de la página
+                    for rect in rects:
+                        self.pdf_viewer.highlight_search_result(page_num, rect)
+                
+                # Desplazar la vista al primer match encontrado
+                first_match_page = matches[0]['page']
                 for data in self.pdf_viewer.pages_data:
-                    if data['page_num'] == found_page:
-                        # Desplazar el scrollable frame hasta el widget
+                    if data['page_num'] == first_match_page:
                         self.pdf_viewer.see(data['frame'])
-                        # Un pequeño feedback visual opcional podría ser resaltar el borde
                         break
-                messagebox.showinfo("Búsqueda", f"Término encontrado en la página {found_page}")
+                
+                messagebox.showinfo("Búsqueda", f"Se han encontrado {len(matches)} coincidencias en el documento.")
             else:
                 messagebox.showinfo("Búsqueda", "No se encontró el término.")
         except Exception as e:
@@ -496,7 +620,8 @@ class PDFEditorApp(ctk.CTk):
             ("🔄", "Rotar PDF", self.select_tab_rotate),
             ("🗑️", "Eliminar páginas", self.select_tab_delete),
             ("📑", "Organizar páginas", self.select_tab_reorder),
-            ("📑", "Dividir PDF", self.select_tab_split)
+            ("✂️", "Dividir PDF", self.select_tab_split),
+            ("➕", "Unir PDFs", self.select_tab_merge)
         ])
         
         self.create_sidebar_group("AGREGAR CONTENIDO", [
@@ -515,8 +640,38 @@ class PDFEditorApp(ctk.CTk):
         self.context_label.pack(pady=20)
 
     def setup_all_tools_sidebar(self):
-        ctk.CTkLabel(self.sidebar, text="Todas las herramientas", font=("Arial", 16, "bold"), text_color="black").pack(pady=20)
-        ctk.CTkLabel(self.sidebar, text="Vista general próximamente...", font=("Arial", 12), text_color="gray").pack()
+        """Muestra todas las herramientas disponibles en una sola lista"""
+        sidebar_header = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        sidebar_header.pack(fill="x", padx=15, pady=(15, 10))
+        ctk.CTkLabel(sidebar_header, text="Todas las herramientas", font=("Arial", 18, "bold"), text_color="black").pack(side="left")
+
+        # Versión consolidada de todas las categorías
+        tools_list = [
+            ("MODIFICAR", [
+                ("🔄", "Rotar PDF", self.select_tab_rotate),
+                ("🗑️", "Eliminar páginas", self.select_tab_delete),
+                ("📑", "Organizar páginas", self.select_tab_reorder),
+                ("✂️", "Dividir PDF", self.select_tab_split),
+                ("➕", "Unir PDFs", self.select_tab_merge)
+            ]),
+            ("AGREGAR", [
+                ("T+", "Texto", self.select_tab_add_text),
+                ("🖼️", "Imagen", self.select_tab_add_image),
+                ("🔗", "Enlace", self.select_tab_link),
+            ]),
+            ("CONVERTIR", [
+                ("📄", "A Word / ODT", self.convert_to_word),
+                ("📊", "A Excel / ODS", self.convert_to_excel),
+                ("🖼️", "A Imagen", self.process_export_images),
+            ]),
+            ("FIRMA", [
+                ("🖋️", "Firma Digital", self.select_tab_sign),
+                ("📧", "Solicitar firmas", self.select_tab_request_sign),
+            ])
+        ]
+
+        for category, items in tools_list:
+            self.create_sidebar_group(category, items)
 
     def setup_convert_sidebar(self):
         ctk.CTkLabel(self.sidebar, text="Convertir", font=("Arial", 16, "bold"), text_color="black").pack(pady=20)
@@ -531,7 +686,7 @@ class PDFEditorApp(ctk.CTk):
         ctk.CTkLabel(self.sidebar, text="Firma electrónica", font=("Arial", 16, "bold"), text_color="black").pack(pady=20)
         self.create_sidebar_group("ACCIONES", [
             ("🖋️", "Firma Digital", self.select_tab_sign),
-            ("📧", "Solicitar firmas", None),
+            ("📧", "Solicitar firmas", self.select_tab_request_sign),
         ])
         self.setup_context_frame()
 
@@ -570,6 +725,10 @@ class PDFEditorApp(ctk.CTk):
         self.zoom_label = ctk.CTkLabel(self.zoom_ctrls, text="100%", font=("Arial", 12, "bold"))
         self.zoom_label.pack(side="left", padx=10)
         ctk.CTkButton(self.zoom_ctrls, text="+", width=30, height=30, fg_color="transparent", text_color="black", command=lambda: self.adjust_zoom(0.1)).pack(side="left", padx=5)
+        
+        # Botón de Ajustar a la ventana
+        ctk.CTkButton(self.zoom_ctrls, text="🗖 Ajustar", width=70, height=30, fg_color="transparent", text_color="black", 
+                      hover_color="#f0f0f0", command=self.set_fit_to_width).pack(side="left", padx=5)
 
         # El visor de PDF propiamente dicho
         self.pdf_viewer = InteractivePDFViewer(self.viewer_container)
@@ -580,6 +739,22 @@ class PDFEditorApp(ctk.CTk):
         self.zoom_level = max(0.1, min(5.0, self.zoom_level))
         self.zoom_label.configure(text=f"{int(self.zoom_level*100)}%")
         self.pdf_viewer.set_zoom(self.zoom_level)
+
+    def set_fit_to_width(self):
+        """Ajusta el PDF al ancho de la ventana"""
+        if not self.current_pdf_path:
+            return
+            
+        self.pdf_viewer.set_zoom(self.zoom_level, mode='fit_width')
+        # Después de que el visor se ajusta, actualizamos nuestro label local
+        # (Aunque el visor hará su carga incremental, podemos estimar el zoom)
+        self.after(500, self._update_zoom_label_from_viewer)
+
+    def _update_zoom_label_from_viewer(self):
+        """Actualiza el label de zoom leyendo el valor real del visor"""
+        if hasattr(self, 'pdf_viewer'):
+            self.zoom_level = self.pdf_viewer.zoom_level
+            self.zoom_label.configure(text=f"{int(self.zoom_level*100)}%")
 
     def show_tool_options(self, tool_name, setup_func):
         """Limpia el panel contextual y carga las opciones de la herramienta"""
@@ -630,6 +805,13 @@ class PDFEditorApp(ctk.CTk):
             self.pdf_viewer.set_interaction_mode('add_image') # Reutilizamos modo imagen para firma
             self.show_tool_options("Firma Electrónica", self.setup_sign_context)
 
+    def select_tab_request_sign(self):
+        if not self.current_pdf_path:
+            self.open_pdf_dialog()
+        if self.current_pdf_path:
+            self.switch_tab("Firma electrónica")
+            self.show_tool_options("Solicitar Firmas", self.setup_request_sign_context)
+
     def select_tab_link(self):
         if not self.current_pdf_path:
             self.open_pdf_dialog()
@@ -638,22 +820,55 @@ class PDFEditorApp(ctk.CTk):
             self.show_tool_options("Agregar Enlace", self.setup_link_context)
 
     def setup_link_context(self, parent):
-        ctk.CTkLabel(parent, text="URL del enlace:").pack(pady=5)
+        ctk.CTkLabel(parent, text="Agregar Enlace", font=("Arial", 11, "bold")).pack(pady=(10, 5))
+        ctk.CTkLabel(parent, text="URL del enlace:").pack(pady=2)
         self.entry_link_url = ctk.CTkEntry(parent, width=220)
         self.entry_link_url.insert(0, "https://")
         self.entry_link_url.pack(pady=5)
         
-        ctk.CTkLabel(parent, text="Instrucciones: Haz clic en el PDF para marcar el área del enlace.").pack(pady=5, padx=10)
+        ctk.CTkLabel(parent, text="Haz clic en el PDF para marcar\nel área del enlace.", font=("Arial", 10, "italic")).pack(pady=10)
         
-        self.pending_links = []
         self.pending_links_list = ctk.CTkTextbox(parent, height=60, width=220, font=("Arial", 10))
         self.pending_links_list.pack(pady=5)
         self.pending_links_list.configure(state="disabled")
 
-        btn_apply = ctk.CTkButton(parent, text="Aplicar Enlaces y Guardar", command=self.apply_links, fg_color="#28a745")
-        btn_apply.pack(pady=10)
+        btn_grid = ctk.CTkFrame(parent, fg_color="transparent")
+        btn_grid.pack(pady=10)
+
+        ctk.CTkButton(btn_grid, text="➕ Aplicar", command=self.apply_links_temp, fg_color="#0066cc", width=105).grid(row=0, column=0, padx=2, pady=2)
+        ctk.CTkButton(btn_grid, text="🧹 Limpiar", command=self.clear_pending_links, fg_color="#6c757d", width=105).grid(row=0, column=1, padx=2, pady=2)
+        ctk.CTkButton(parent, text="💾 Guardar PDF", command=self.save_current_pdf, fg_color="#28a745", height=35).pack(pady=5, fill="x", padx=25)
         
         self.pdf_viewer.on_click_callback = self.on_pdf_click_add_link
+
+    def apply_links_temp(self):
+        """Aplica los enlaces de forma temporal para previsualización"""
+        if not self.pending_links:
+            messagebox.showwarning("Aviso", "No hay enlaces para aplicar.")
+            return
+            
+        try:
+            import tempfile
+            handle, temp_output = tempfile.mkstemp(suffix=".pdf")
+            os.close(handle)
+            
+            current_file = self.current_pdf_path
+            for link in self.pending_links:
+                pdf_tools.add_link_to_pdf(
+                    current_file, temp_output, 
+                    link['page_num'], link['x'], link['y'], 
+                    link['width'], link['height'], link['url']
+                )
+                current_file = temp_output
+            
+            messagebox.showinfo("Aplicado", "Enlaces aplicados visualmente. Usa 'Guardar PDF' para permanencia.")
+            self.pending_links = []
+            self.update_pending_links_list()
+            self.pdf_viewer.clear_overlays()
+            self.current_pdf_path = temp_output
+            self.pdf_viewer.load_pdf(temp_output)
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
 
     def on_pdf_click_add_link(self, page_num, x, y):
         url = self.entry_link_url.get()
@@ -682,6 +897,12 @@ class PDFEditorApp(ctk.CTk):
         for link in self.pending_links:
             self.pending_links_list.insert("end", f"P{link['page_num']}: {link['url']}\n")
         self.pending_links_list.configure(state="disabled")
+
+    def clear_pending_links(self):
+        """Limpia todos los enlaces pendientes"""
+        self.pending_links = []
+        self.update_pending_links_list()
+        self.pdf_viewer.clear_overlays()
 
     def apply_links(self):
         if not self.pending_links:
@@ -723,8 +944,25 @@ class PDFEditorApp(ctk.CTk):
         self.lbl_sign_status = ctk.CTkLabel(tab_img, text="Sin firma seleccionada", font=("Arial", 10))
         self.lbl_sign_status.pack()
         
-        btn_apply = ctk.CTkButton(tab_img, text="Aplicar Firma y Guardar", command=self.apply_images, fg_color="#28a745")
-        btn_apply.pack(pady=10)
+        ctk.CTkLabel(tab_img, text="Instrucciones: Selecciona la firma y luego\nhaz clic en el PDF para colocarla.", 
+                     font=("Arial", 11, "italic")).pack(pady=5)
+        
+        # Lista de firmas colocadas para confirmar visualmente
+        self.pending_signs_list = ctk.CTkTextbox(tab_img, height=60, width=220, font=("Arial", 10))
+        self.pending_signs_list.pack(pady=5)
+        self.pending_signs_list.configure(state="disabled")
+        
+        btn_apply = ctk.CTkButton(tab_img, text="Aplicar Firma", command=self.apply_signature_image_temp, fg_color="#007bff")
+        btn_apply.pack(pady=5)
+        
+        btn_clear = ctk.CTkButton(tab_img, text="Limpiar Selección", command=self.clear_pending_images, fg_color="#6c757d")
+        btn_clear.pack(pady=5)
+        
+        btn_save = ctk.CTkButton(tab_img, text="Guardar Cambios", command=self.save_current_pdf, fg_color="#28a745")
+        btn_save.pack(pady=10)
+        
+        # Vincular callback para que funcione el clic en el PDF
+        self.pdf_viewer.on_click_callback = self.on_pdf_click_add_image
         
         # --- Tab Digital ---
         ctk.CTkLabel(tab_digital, text="Certificado (.p12 / .pfx):").pack(pady=5)
@@ -739,6 +977,52 @@ class PDFEditorApp(ctk.CTk):
         
         btn_sign_digital = ctk.CTkButton(tab_digital, text="Firmar con Certificado", command=self.process_digital_sign, fg_color="#007bff")
         btn_sign_digital.pack(pady=15)
+
+    def setup_request_sign_context(self, parent):
+        ctk.CTkLabel(parent, text="Email del destinatario:").pack(pady=5)
+        self.entry_request_email = ctk.CTkEntry(parent, width=220)
+        self.entry_request_email.pack(pady=5)
+        
+        ctk.CTkLabel(parent, text="Asunto:").pack(pady=5)
+        self.entry_request_subject = ctk.CTkEntry(parent, width=220)
+        self.entry_request_subject.insert(0, f"Firma requerida: {os.path.basename(self.current_pdf_path) if self.current_pdf_path else 'PDF'}")
+        self.entry_request_subject.pack(pady=5)
+
+        ctk.CTkLabel(parent, text="Mensaje:").pack(pady=5)
+        self.text_request_msg = ctk.CTkTextbox(parent, height=100, width=220)
+        self.text_request_msg.insert("0.0", "Hola,\n\nTe envío este documento para que lo firmes electrónicamente.\n\nSaludos.")
+        self.text_request_msg.pack(pady=5)
+
+        btn_send = ctk.CTkButton(parent, text="Enviar Solicitud", command=self.process_request_sign, fg_color="#28a745")
+        btn_send.pack(pady=15)
+
+    def process_request_sign(self):
+        email = self.entry_request_email.get()
+        subject = self.entry_request_subject.get()
+        message = self.text_request_msg.get("0.0", "end")
+        
+        if not email or "@" not in email:
+            messagebox.showwarning("Aviso", "Por favor, introduce un email válido.")
+            return
+
+        # Simulación de envío por correo abriendo el cliente predeterminado
+        import webbrowser
+        import urllib.parse
+        
+        body = f"{message}\n\nDocumento adjunto: {os.path.basename(self.current_pdf_path) if self.current_pdf_path else 'PDF'}"
+        mailto_link = f"mailto:{email}?subject={urllib.parse.quote(subject)}&body={urllib.parse.quote(body)}"
+        
+        try:
+            # En Linux, xdg-open suele ser más fiable para mailto si webbrowser falla
+            import subprocess
+            subprocess.run(['xdg-open', mailto_link], check=False)
+            messagebox.showinfo("Solicitud Enviada", f"Se ha enviado la instrucción de apertura a tu cliente de correo para: {email}")
+        except Exception as e:
+            try:
+                # Fallback a webbrowser por si xdg-open no está (poco probable en Linux Mint)
+                webbrowser.open(mailto_link)
+            except:
+                messagebox.showerror("Error", f"No se pudo abrir el cliente de correo: {str(e)}")
 
     def select_signature_image(self):
         f = filedialog.askopenfilename(filetypes=[("Image files", "*.png *.jpg *.jpeg")])
@@ -772,12 +1056,14 @@ class PDFEditorApp(ctk.CTk):
         if not self.current_pdf_path: return
         
         output = filedialog.asksaveasfilename(defaultextension=".docx", 
-                                             filetypes=[("Word / Writer", "*.docx *.odt")])
+                                             filetypes=[("LibreOffice Writer", "*.odt"), ("Word", "*.docx")])
         if output:
             try:
-                # Nota: pdf2docx genera .docx, que LibreOffice Writer abre nativamente como su estándar moderno.
-                pdf_tools.convert_pdf_to_word(self.current_pdf_path, output)
-                messagebox.showinfo("Éxito", f"PDF convertido correctamente (Compatible con Word y Writer): {output}")
+                if output.lower().endswith('.odt'):
+                    pdf_tools.convert_pdf_to_odt(self.current_pdf_path, output)
+                else:
+                    pdf_tools.convert_pdf_to_word(self.current_pdf_path, output)
+                messagebox.showinfo("Éxito", f"PDF convertido correctamente: {output}")
             except Exception as e:
                 messagebox.showerror("Error", f"No se pudo convertir: {str(e)}")
 
@@ -787,12 +1073,14 @@ class PDFEditorApp(ctk.CTk):
         if not self.current_pdf_path: return
         
         output = filedialog.asksaveasfilename(defaultextension=".xlsx", 
-                                             filetypes=[("Excel / Calc", "*.xlsx *.ods")])
+                                             filetypes=[("LibreOffice Calc", "*.ods"), ("Excel", "*.xlsx")])
         if output:
             try:
-                # Nota: El formato .xlsx es el estándar moderno compatible con Excel y Calc.
-                pdf_tools.convert_pdf_to_excel(self.current_pdf_path, output)
-                messagebox.showinfo("Éxito", f"Tablas extraídas correctamente (Compatible con Excel y Calc): {output}")
+                if output.lower().endswith('.ods'):
+                    pdf_tools.convert_pdf_to_ods(self.current_pdf_path, output)
+                else:
+                    pdf_tools.convert_pdf_to_excel(self.current_pdf_path, output)
+                messagebox.showinfo("Éxito", f"Tablas extraídas correctamente: {output}")
             except Exception as e:
                 messagebox.showerror("Error", f"No se pudo extraer: {str(e)}")
 
@@ -823,24 +1111,16 @@ class PDFEditorApp(ctk.CTk):
             self.cert_entry.insert(0, f)
 
     def setup_add_text_context(self, parent):
-        ctk.CTkLabel(parent, text="Texto a agregar:").pack(pady=5)
-        self.entry_text = ctk.CTkEntry(parent, width=220)
+        ctk.CTkLabel(parent, text="Texto a agregar:", font=("Arial", 11, "bold")).pack(pady=5)
+        self.entry_text = ctk.CTkEntry(parent, width=220, placeholder_text="Escribe aquí...")
         self.entry_text.pack(pady=5)
         
-        ctk.CTkLabel(parent, text="Tamaño:").pack(pady=2)
+        ctk.CTkLabel(parent, text="Tamaño:", font=("Arial", 11)).pack(pady=2)
         self.entry_font_size = ctk.CTkEntry(parent, width=60)
         self.entry_font_size.insert(0, "12")
         self.entry_font_size.pack(pady=2)
 
-        # Paleta de colores simplificada
-        self.predefined_colors = [
-            ("Negro", "#000000", (0, 0, 0)),
-            ("Rojo", "#FF0000", (255, 0, 0)),
-            ("Azul", "#0000FF", (0, 0, 255)),
-            ("Verde", "#00FF00", (0, 255, 0)),
-        ]
-        self.selected_text_color = (0, 0, 0)
-        
+        # Paleta de colores
         color_frame = ctk.CTkFrame(parent, fg_color="transparent")
         color_frame.pack(pady=5)
         for _, hex_color, rgb in self.predefined_colors:
@@ -850,62 +1130,79 @@ class PDFEditorApp(ctk.CTk):
         self.selected_color_display = ctk.CTkLabel(parent, text="Color: Negro", font=("Arial", 10))
         self.selected_color_display.pack()
 
-        # Lista de textos pendientes (mini)
         self.pending_texts_list = ctk.CTkTextbox(parent, height=60, width=220, font=("Arial", 10))
         self.pending_texts_list.pack(pady=5)
         self.pending_texts_list.configure(state="disabled")
 
-        btn_apply = ctk.CTkButton(parent, text="Aplicar y Guardar", command=self.apply_texts, fg_color="#28a745")
-        btn_apply.pack(pady=10)
+        btn_grid = ctk.CTkFrame(parent, fg_color="transparent")
+        btn_grid.pack(pady=10)
+
+        ctk.CTkButton(btn_grid, text="➕ Aplicar", command=self.apply_texts_temp, fg_color="#0066cc", width=105).grid(row=0, column=0, padx=2, pady=2)
+        ctk.CTkButton(btn_grid, text="🧹 Limpiar", command=self.clear_pending_texts, fg_color="#6c757d", width=105).grid(row=0, column=1, padx=2, pady=2)
+        ctk.CTkButton(parent, text="💾 Guardar PDF", command=self.save_current_pdf, fg_color="#28a745", height=35).pack(pady=5, fill="x", padx=25)
         
-        # Vincular callback del visor
         self.pdf_viewer.on_click_callback = self.on_pdf_click_add_text
 
     def setup_rotate_context(self, parent):
-        ctk.CTkLabel(parent, text="Prueba la rotación antes de guardar:").pack(pady=10)
+        ctk.CTkLabel(parent, text="Girar páginas (Vista previa):", font=("Arial", 11, "bold")).pack(pady=10)
         
         btn_frame = ctk.CTkFrame(parent, fg_color="transparent")
         btn_frame.pack(pady=5)
         
-        btn_left = ctk.CTkButton(btn_frame, text="↩️ Girar -90°", width=100, command=lambda: self.preview_rotate(-90))
-        btn_left.pack(side="left", padx=5)
+        ctk.CTkButton(btn_frame, text="↩️ -90°", width=105, command=lambda: self.preview_rotate(-90)).pack(side="left", padx=2)
+        ctk.CTkButton(btn_frame, text="↪️ +90°", width=105, command=lambda: self.preview_rotate(90)).pack(side="left", padx=2)
         
-        btn_right = ctk.CTkButton(btn_frame, text="↪️ Girar +90°", width=100, command=lambda: self.preview_rotate(90))
-        btn_right.pack(side="left", padx=5)
+        ctk.CTkLabel(parent, text="Rotación completa:", font=("Arial", 11)).pack(pady=(15, 5))
+        ctk.CTkButton(parent, text="🔃 Girar 180°", width=214, command=lambda: self.preview_rotate(180)).pack(pady=2)
         
-        ctk.CTkLabel(parent, text="Una vez decidido, guarda el archivo:").pack(pady=(20, 5))
-        
-        self.rotate_var = ctk.StringVar(value="90")
-        ctk.CTkRadioButton(parent, text="90° Horario (Final)", variable=self.rotate_var, value="90").pack(pady=2)
-        ctk.CTkRadioButton(parent, text="180° (Final)", variable=self.rotate_var, value="180").pack(pady=2)
-        ctk.CTkRadioButton(parent, text="270° Horario (Final)", variable=self.rotate_var, value="270").pack(pady=2)
-        
-        btn_rot = ctk.CTkButton(parent, text="Guardar Cambios en PDF", command=self.process_rotate, fg_color="#0066cc")
-        btn_rot.pack(pady=15)
+        ctk.CTkLabel(parent, text="¿Guardar cambios?", font=("Arial", 11)).pack(pady=(25, 5))
+        ctk.CTkButton(parent, text="💾 Guardar PDF", command=self.process_rotate, fg_color="#28a745", height=35).pack(pady=5, fill="x", padx=25)
 
     def preview_rotate(self, angle):
-        """Rota solo la previsualización en el visor"""
-        if self.current_pdf_path:
-            messagebox.showinfo("Previsualización", f"Rotación de {angle}° aplicada visualmente (Simulado). \nUsa el botón azul para aplicar y guardar permanentemente.")
+        """Rota la previsualización en el visor generando un temporal"""
+        if not self.current_pdf_path:
+            return
+            
+        try:
+            import tempfile
+            import os
+            handle, temp_output = tempfile.mkstemp(suffix=".pdf")
+            os.close(handle)
+            
+            # Rotar el estado actual
+            pdf_tools.rotate_pdf(self.current_pdf_path, angle, temp_output)
+            
+            # Actualizar visor con el nuevo temporal
+            self.current_pdf_path = temp_output
+            self.pdf_viewer.load_pdf(temp_output)
+            
+            # Notificar al usuario que es temporal
+            # ctk.messagebox no es estándar, usamos el de tkinter
+            # Pero mejor simplemente actualizar el visor.
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
 
     def setup_delete_context(self, parent):
-        ctk.CTkLabel(parent, text="Haz clic en las páginas\nen el visor para marcarlas.", font=("Arial", 11)).pack(pady=10)
-        btn_del = ctk.CTkButton(parent, text="Eliminar Marcadas", command=self.process_delete_pages, fg_color="#cc0000")
-        btn_del.pack(pady=15)
+        ctk.CTkLabel(parent, text="Eliminar Páginas", font=("Arial", 11, "bold")).pack(pady=10)
+        ctk.CTkLabel(parent, text="Haz clic en las páginas del visor\npara marcarlas para borrar.", font=("Arial", 10, "italic")).pack(pady=5)
+        btn_del = ctk.CTkButton(parent, text="🗑️ Eliminar Marcadas", command=self.process_delete_pages, fg_color="#cc0000", height=40)
+        btn_del.pack(pady=20, fill="x", padx=20)
 
     def setup_add_image_context(self, parent):
-        ctk.CTkButton(parent, text="Seleccionar Imagen", command=self.select_image_to_add).pack(pady=10)
-        self.lbl_image_to_add = ctk.CTkLabel(parent, text="Sin imagen", font=("Arial", 10))
+        ctk.CTkLabel(parent, text="Agregar Imagen / Firma", font=("Arial", 11, "bold")).pack(pady=(10, 5))
+        ctk.CTkButton(parent, text="🖼️ Seleccionar Imagen", command=self.select_image_to_add).pack(pady=5)
+        self.lbl_image_to_add = ctk.CTkLabel(parent, text="Sin imagen", font=("Arial", 10, "italic"))
         self.lbl_image_to_add.pack()
 
+        ctk.CTkLabel(parent, text="Dimensiones (puntos):", font=("Arial", 10)).pack(pady=(10, 2))
         dim_frame = ctk.CTkFrame(parent, fg_color="transparent")
-        dim_frame.pack(pady=5)
+        dim_frame.pack(pady=2)
         ctk.CTkLabel(dim_frame, text="W:").pack(side="left")
-        self.entry_width_image = ctk.CTkEntry(dim_frame, width=50)
+        self.entry_width_image = ctk.CTkEntry(dim_frame, width=60)
         self.entry_width_image.insert(0, "200")
         self.entry_width_image.pack(side="left", padx=2)
         ctk.CTkLabel(dim_frame, text="H:").pack(side="left")
-        self.entry_height_image = ctk.CTkEntry(dim_frame, width=50)
+        self.entry_height_image = ctk.CTkEntry(dim_frame, width=60)
         self.entry_height_image.insert(0, "200")
         self.entry_height_image.pack(side="left", padx=2)
         
@@ -913,10 +1210,13 @@ class PDFEditorApp(ctk.CTk):
         self.pending_images_list.pack(pady=5)
         self.pending_images_list.configure(state="disabled")
 
-        btn_apply = ctk.CTkButton(parent, text="Aplicar y Guardar", command=self.apply_images, fg_color="#28a745")
-        btn_apply.pack(pady=10)
+        btn_grid = ctk.CTkFrame(parent, fg_color="transparent")
+        btn_grid.pack(pady=10)
+
+        ctk.CTkButton(btn_grid, text="➕ Aplicar", command=self.apply_images_temp, fg_color="#0066cc", width=105).grid(row=0, column=0, padx=2, pady=2)
+        ctk.CTkButton(btn_grid, text="🧹 Limpiar", command=self.clear_pending_images, fg_color="#6c757d", width=105).grid(row=0, column=1, padx=2, pady=2)
+        ctk.CTkButton(parent, text="💾 Guardar PDF", command=self.save_current_pdf, fg_color="#28a745", height=35).pack(pady=5, fill="x", padx=25)
         
-        # Vincular callback
         self.pdf_viewer.on_click_callback = self.on_pdf_click_add_image
     
     def select_tab_reorder(self):
@@ -935,24 +1235,44 @@ class PDFEditorApp(ctk.CTk):
         self.show_tool_options("Unir PDFs", self.setup_merge_context)
 
     def setup_reorder_context(self, parent):
-        ctk.CTkLabel(parent, text="Nuevo orden (ej: 3,1,2):").pack(pady=5)
-        self.entry_new_order = ctk.CTkEntry(parent, width=220)
+        ctk.CTkLabel(parent, text="Reordenar Páginas", font=("Arial", 11, "bold")).pack(pady=(10, 5))
+        ctk.CTkLabel(parent, text="Nuevo orden (ej: 3,1,2):").pack(pady=2)
+        self.entry_new_order = ctk.CTkEntry(parent, width=220, placeholder_text="Ej: 3, 1, 2")
         self.entry_new_order.pack(pady=5)
-        btn_reorder = ctk.CTkButton(parent, text="Reordenar", command=self.process_reorder, fg_color="#0066cc")
-        btn_reorder.pack(pady=15)
+        
+        btn_reorder = ctk.CTkButton(parent, text="🚀 Reordenar y Ver", command=self.process_reorder, fg_color="#0066cc", height=35)
+        btn_reorder.pack(pady=20, fill="x", padx=25)
 
     def setup_split_context(self, parent):
-        ctk.CTkLabel(parent, text="Divide el PDF en páginas\nindividuales.", font=("Arial", 11)).pack(pady=10)
-        btn_split = ctk.CTkButton(parent, text="Dividir PDF", command=self.process_split, fg_color="#0066cc")
-        btn_split.pack(pady=15)
+        ctk.CTkLabel(parent, text="Dividir / Extraer Páginas", font=("Arial", 11, "bold")).pack(pady=(10, 2))
+        ctk.CTkLabel(parent, text="(ej: 1, 3, 5-10 o vacío para todas)", font=("Arial", 10, "italic")).pack(pady=(0, 10))
+        
+        self.entry_split_pages = ctk.CTkEntry(parent, width=220, placeholder_text="Ej: 1-5, 8, 10")
+        self.entry_split_pages.pack(pady=5)
+        
+        self.split_mode_var = ctk.BooleanVar(value=False)
+        self.check_split_mode = ctk.CTkCheckBox(parent, text="Extraer a un único PDF", variable=self.split_mode_var)
+        self.check_split_mode.pack(pady=10)
+        
+        btn_split = ctk.CTkButton(parent, text="🚀 Dividir/Extraer PDF", command=self.process_split, fg_color="#0066cc", height=40)
+        btn_split.pack(pady=15, fill="x", padx=20)
 
     def setup_merge_context(self, parent):
-        ctk.CTkButton(parent, text="Agregar Archivos", command=self.add_files_merge).pack(pady=10)
-        self.listbox_merge = ctk.CTkTextbox(parent, height=100, width=220)
+        ctk.CTkLabel(parent, text="Lista de archivos a unir:", font=("Arial", 11, "bold")).pack(pady=(10, 5))
+        
+        self.listbox_merge = ctk.CTkTextbox(parent, height=150, width=220, font=("Arial", 10))
         self.listbox_merge.pack(pady=5)
         self.listbox_merge.configure(state="disabled")
-        btn_merge = ctk.CTkButton(parent, text="Unir y Guardar", command=self.process_merge, fg_color="#28a745")
-        btn_merge.pack(pady=15)
+        
+        btn_grid = ctk.CTkFrame(parent, fg_color="transparent")
+        btn_grid.pack(pady=5)
+        
+        ctk.CTkButton(btn_grid, text="➕ Agregar", width=100, command=self.add_files_merge).grid(row=0, column=0, padx=2, pady=2)
+        ctk.CTkButton(btn_grid, text="🗑️ Eliminar", width=100, command=self.remove_selected_merge_file, fg_color="#cc6600").grid(row=0, column=1, padx=2, pady=2)
+        ctk.CTkButton(btn_grid, text="🧹 Limpiar", width=100, command=self.clear_merge_list, fg_color="#6c757d").grid(row=1, column=0, padx=2, pady=2)
+        ctk.CTkButton(btn_grid, text="🔄 Invertir", width=100, command=self.reverse_merge_list, fg_color="#6c757d").grid(row=1, column=1, padx=2, pady=2)
+        
+        ctk.CTkButton(parent, text="🚀 Unir y Guardar", command=self.process_merge, fg_color="#28a745", height=40).pack(pady=15, fill="x", padx=20)
 
     def set_viewer_zoom(self, zoom, mode='fixed'):
         """Ajusta el zoom del visor"""
@@ -990,6 +1310,36 @@ class PDFEditorApp(ctk.CTk):
             self.merge_files.extend(files)
             self.update_merge_list()
 
+    def remove_selected_merge_file(self):
+        """Elimina el archivo que esté resaltado o el último de la lista si no hay selección clara"""
+        if not self.merge_files: return
+        
+        # En un CTkTextbox no es trivial obtener la línea seleccionada de forma robusta para este caso
+        # pero podemos intentar obtener el texto seleccionado o simplemente eliminar el último.
+        # Por simplicidad y evitar errores de índice, eliminaremos el último añadido o el que coincida con la selección.
+        try:
+            selected_text = self.listbox_merge.get("sel.first", "sel.last").strip()
+            if selected_text:
+                for f in self.merge_files:
+                    if os.path.basename(f) == selected_text:
+                        self.merge_files.remove(f)
+                        break
+            else:
+                self.merge_files.pop()
+        except:
+            if self.merge_files:
+                self.merge_files.pop()
+        
+        self.update_merge_list()
+
+    def clear_merge_list(self):
+        self.merge_files = []
+        self.update_merge_list()
+
+    def reverse_merge_list(self):
+        self.merge_files.reverse()
+        self.update_merge_list()
+
     def update_merge_list(self):
         self.listbox_merge.configure(state="normal")
         self.listbox_merge.delete("0.0", "end")
@@ -1017,29 +1367,48 @@ class PDFEditorApp(ctk.CTk):
             messagebox.showwarning("Aviso", "Abre un PDF primero.")
             return
 
-        output_dir = filedialog.askdirectory()
-        if output_dir:
-            try:
-                pdf_tools.split_pdf(self.current_pdf_path, output_dir)
-                messagebox.showinfo("Éxito", f"PDF dividido en {output_dir}")
-            except Exception as e:
-                messagebox.showerror("Error", str(e))
+        range_str = self.entry_split_pages.get()
+        combine_single = self.split_mode_var.get()
+        
+        try:
+            max_p = pdf_tools.get_pdf_page_count(self.current_pdf_path)
+            pages = pdf_tools.parse_page_range(range_str, max_p)
+            
+            if not pages:
+                messagebox.showwarning("Aviso", "No se identificaron páginas válidas para extraer.")
+                return
+
+            if combine_single:
+                output = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")])
+                if output:
+                    pdf_tools.extract_pages_to_one_pdf(self.current_pdf_path, output, pages)
+                    messagebox.showinfo("Éxito", f"Páginas extraídas en: {output}")
+            else:
+                output_dir = filedialog.askdirectory()
+                if output_dir:
+                    pdf_tools.split_pdf(self.current_pdf_path, output_dir, pages_to_extract=pages)
+                    messagebox.showinfo("Éxito", f"PDF dividido en {output_dir}")
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
 
     def process_rotate(self):
+        """Guarda permanentemente el PDF con la rotación actual"""
         if not self.current_pdf_path:
             messagebox.showwarning("Aviso", "Abre un PDF primero.")
             return
         
-        output = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")])
+        output = filedialog.asksaveasfilename(defaultextension=".pdf", 
+                                             filetypes=[("PDF files", "*.pdf")],
+                                             initialfile="rotated_" + os.path.basename(self.current_pdf_path))
         if output:
             try:
-                degrees = int(self.rotate_var.get())
-                pdf_tools.rotate_pdf(self.current_pdf_path, degrees, output)
-                messagebox.showinfo("Éxito", "PDF rotado correctamente.")
+                import shutil
+                shutil.copy2(self.current_pdf_path, output)
+                messagebox.showinfo("Éxito", "PDF guardado con la nueva rotación de forma permanente.")
                 self.current_pdf_path = output
-                self.pdf_viewer.load_pdf(output)
+                self.title(f"Editor PDF Pro - {os.path.basename(output)}")
             except Exception as e:
-                messagebox.showerror("Error", str(e))
+                messagebox.showerror("Error", f"No se pudo guardar: {str(e)}")
 
     def process_extract(self):
         if not self.current_pdf_path:
@@ -1154,34 +1523,35 @@ class PDFEditorApp(ctk.CTk):
         self.update_pending_texts_list()
         self.pdf_viewer.clear_overlays()
 
-    def apply_texts(self):
-        """Aplica todos los textos pendientes al PDF"""
+    def apply_texts_temp(self):
+        """Aplica los textos de forma temporal para previsualización"""
         if not self.current_pdf_path:
             messagebox.showwarning("Aviso", "Abre un PDF primero.")
-            return
+            return print("No hay PDF")
         
         if not self.pending_texts:
             messagebox.showwarning("Aviso", "No hay textos para aplicar.")
             return
-        
-        output = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")])
-        if output:
-            try:
-                current_file = self.current_pdf_path
-                # Para evitar loops infinitos de archivos temporales manejamos esto con cuidado
-                for i, item in enumerate(self.pending_texts):
-                    temp_output = output if i == len(self.pending_texts) - 1 else f"/tmp/tp_{i}.pdf"
-                    pdf_tools.add_text_to_pdf(current_file, temp_output, item['text'], 
-                                             item['page'], item['x'], item['y'], 
-                                             item['font_size'], item['color'])
-                    current_file = temp_output
-                
-                messagebox.showinfo("Éxito", f"{len(self.pending_texts)} texto(s) agregado(s).")
-                self.clear_pending_texts()
-                self.current_pdf_path = output
-                self.pdf_viewer.load_pdf(output)
-            except Exception as e:
-                messagebox.showerror("Error", str(e))
+            
+        try:
+            import tempfile
+            handle, temp_output = tempfile.mkstemp(suffix=".pdf")
+            os.close(handle)
+            
+            current_file = self.current_pdf_path
+            for i, item in enumerate(self.pending_texts):
+                pdf_tools.add_text_to_pdf(current_file, temp_output, item['text'], 
+                                         item['page'], item['x'], item['y'], 
+                                         item['font_size'], item['color'])
+                current_file = temp_output
+            
+            messagebox.showinfo("Aplicado", "Textos aplicados visualmente. Usa 'Guardar PDF' para permanencia.")
+            self.clear_pending_texts()
+            self.current_pdf_path = temp_output
+            self.pdf_viewer.load_pdf(temp_output)
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
 
     def select_image_to_add(self):
         f = filedialog.askopenfilename(filetypes=[("Image files", "*.png *.jpg *.jpeg *.gif *.bmp")])
@@ -1196,8 +1566,9 @@ class PDFEditorApp(ctk.CTk):
             return
         
         try:
-            width = float(self.entry_width_image.get())
-            height = float(self.entry_height_image.get())
+            # Intentar obtener dimensiones de los entries, de lo contrario usar valores por defecto para firmas
+            width = float(self.entry_width_image.get()) if hasattr(self, 'entry_width_image') and self.entry_width_image.winfo_exists() else 150.0
+            height = float(self.entry_height_image.get()) if hasattr(self, 'entry_height_image') and self.entry_height_image.winfo_exists() else 50.0
             
             # Agregar a la lista de pendientes
             self.pending_images.append({
@@ -1212,29 +1583,40 @@ class PDFEditorApp(ctk.CTk):
             # Dibujar overlay
             self.pdf_viewer.draw_image_overlay(page_num, pdf_x, pdf_y, width, height)
             
-            # Actualizar lista
-            self.update_pending_images_list()
+            # Actualizar listas (puede haber dos diferentes según la pestaña)
+            self.update_pending_images_lists()
             
         except ValueError:
             messagebox.showerror("Error", "Verifica que los valores numéricos sean correctos.")
 
-    def update_pending_images_list(self):
-        """Actualiza la lista de imágenes pendientes"""
-        self.pending_images_list.configure(state="normal")
-        self.pending_images_list.delete("0.0", "end")
-        for i, item in enumerate(self.pending_images):
-            self.pending_images_list.insert("end", 
-                f"{i+1}. Pág {item['page']}: {os.path.basename(item['path'])} en ({int(item['x'])}, {int(item['y'])})\n")
-        self.pending_images_list.configure(state="disabled")
+    def update_pending_images_lists(self):
+        """Actualiza las listas de imágenes/firmas pendientes en la UI"""
+        # Actualizar lista en pestaña Editar -> Imagen
+        if hasattr(self, 'pending_images_list') and self.pending_images_list.winfo_exists():
+            self.pending_images_list.configure(state="normal")
+            self.pending_images_list.delete("0.0", "end")
+            for i, item in enumerate(self.pending_images):
+                self.pending_images_list.insert("end", 
+                    f"{i+1}. Pág {item['page']}: {os.path.basename(item['path'])}\n")
+            self.pending_images_list.configure(state="disabled")
+            
+        # Actualizar lista en pestaña Firma electrónica -> Imagen
+        if hasattr(self, 'pending_signs_list') and self.pending_signs_list.winfo_exists():
+            self.pending_signs_list.configure(state="normal")
+            self.pending_signs_list.delete("0.0", "end")
+            for i, item in enumerate(self.pending_images):
+                self.pending_signs_list.insert("end", 
+                    f"Firma {i+1} en Pág {item['page']}\n")
+            self.pending_signs_list.configure(state="disabled")
 
     def clear_pending_images(self):
         """Limpia todas las imágenes pendientes"""
         self.pending_images = []
-        self.update_pending_images_list()
+        self.update_pending_images_lists()
         self.pdf_viewer.clear_overlays()
 
-    def apply_images(self):
-        """Aplica todas las imágenes pendientes al PDF"""
+    def apply_images_temp(self):
+        """Aplica las imágenes de forma temporal para previsualización"""
         if not self.current_pdf_path:
             messagebox.showwarning("Aviso", "Abre un PDF primero.")
             return
@@ -1242,24 +1624,61 @@ class PDFEditorApp(ctk.CTk):
         if not self.pending_images:
             messagebox.showwarning("Aviso", "No hay imágenes para aplicar.")
             return
+            
+        try:
+            import tempfile
+            handle, temp_output = tempfile.mkstemp(suffix=".pdf")
+            os.close(handle)
+            
+            current_file = self.current_pdf_path
+            for i, item in enumerate(self.pending_images):
+                pdf_tools.add_image_to_pdf(current_file, temp_output, item['path'], 
+                                          item['page'], item['x'], item['y'], 
+                                          item['width'], item['height'])
+                current_file = temp_output
+            
+            messagebox.showinfo("Aplicado", "Imágenes aplicadas visualmente. Usa 'Guardar PDF' para permanencia.")
+            self.clear_pending_images()
+            self.current_pdf_path = temp_output
+            self.pdf_viewer.load_pdf(temp_output)
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+    def apply_signature_image_temp(self):
+        """Aplica las firmas de imagen a un archivo temporal para previsualización"""
+        if not self.current_pdf_path:
+            messagebox.showwarning("Aviso", "Abre un PDF primero.")
+            return
         
-        output = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")])
-        if output:
-            try:
-                current_file = self.current_pdf_path
-                for i, item in enumerate(self.pending_images):
-                    temp_output = output if i == len(self.pending_images) - 1 else f"/tmp/tp_img_{i}.pdf"
-                    pdf_tools.add_image_to_pdf(current_file, temp_output, item['path'], 
-                                              item['page'], item['x'], item['y'], 
-                                              item['width'], item['height'])
-                    current_file = temp_output
-                
-                messagebox.showinfo("Éxito", f"{len(self.pending_images)} imagen(es) agregadas.")
-                self.clear_pending_images()
-                self.current_pdf_path = output
-                self.pdf_viewer.load_pdf(output)
-            except Exception as e:
-                messagebox.showerror("Error", str(e))
+        if not self.pending_images:
+            messagebox.showinfo("Instrucción", "Primero selecciona la imagen y luego HAZ CLIC en el lugar del PDF donde quieres colocar la firma.")
+            return
+            
+        try:
+            import tempfile
+            # Crear un archivo temporal que persista para el visor
+            handle, temp_output = tempfile.mkstemp(suffix=".pdf")
+            os.close(handle)
+            
+            current_file = self.current_pdf_path
+            for i, item in enumerate(self.pending_images):
+                # Si hay múltiples firmas, usamos una ruta intermedia excepto para la última
+                step_output = temp_output if i == len(self.pending_images) - 1 else f"{temp_output}_step_{i}.pdf"
+                pdf_tools.add_image_to_pdf(current_file, step_output, item['path'], 
+                                          item['page'], item['x'], item['y'], 
+                                          item['width'], item['height'])
+                current_file = step_output
+            
+            # Limpiar archivos de pasos intermedios si existen
+            # (Simplificado por ahora)
+            
+            messagebox.showinfo("Aplicado", "Firma(s) aplicada(s) visualmente. No olvides Guardar para mantener los cambios.")
+            self.clear_pending_images()
+            self.current_pdf_path = temp_output
+            self.pdf_viewer.load_pdf(temp_output)
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
 
     def process_delete_pages(self):
         if not self.current_pdf_path:

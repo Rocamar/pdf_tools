@@ -53,13 +53,15 @@ Editor PDF Interactivo es una aplicación de escritorio para Linux Mint que perm
    - Reorganiza el orden de las páginas
    - Especifica el nuevo orden deseado
 
-5. **Unir PDFs**
+5. **Unir PDFs (Mejorado)**
    - Combina múltiples archivos PDF en uno solo
+   - Nueva interfaz de gestión: Agregar, Eliminar individuales, Limpiar e Invertir orden
    - Mantiene la calidad original
 
-6. **Dividir PDF**
-   - Separa un PDF en páginas individuales
-   - Archivos numerados automáticamente
+6. **Dividir y Extraer PDF (Mejorado)**
+   - Separa un PDF en páginas individuales o extrae rangos específicos
+   - Soporte para rangos inteligentes (ej: `1, 3, 5-10`)
+   - Opción para extraer a archivos individuales o a un único PDF combinado
 
 7. **Rotar PDF**
    - Rota todas las páginas (90°, 180°, 270°)
@@ -315,18 +317,16 @@ Para PDFs grandes (50+ páginas):
 
 ## 🔄 Changelog
 
+### v1.1.0 (2026-01-14)
+
+**Nuevas características y mejoras de UI:**
+
+- ✅ **Extracción específica**: Extrae páginas por número o rango (ej: 1,3,5-8)
+- ✅ **Gestión avanzada de unión**: Botones para agregar/eliminar archivos individuales en la lista de unión.
+- ✅ **Estandarización de interfaz**: Iconos consistentes y mejor agrupamiento de botones en todas las herramientas.
+- ✅ **Panel de control mejorado**: Diseño más limpio y botones con feedback visual.
+
 ### v1.0.0 (2026-01-13)
-
-**Características iniciales:**
-
-- ✅ Editor interactivo con click-to-place
-- ✅ 8 funcionalidades de edición de PDF
-- ✅ Selector de color visual
-- ✅ Vista previa en tiempo real
-- ✅ Sistema de cambios pendientes
-- ✅ Soporte para todas las páginas del PDF
-- ✅ Interfaz de dos paneles
-- ✅ Controles de zoom
 
 ---
 
