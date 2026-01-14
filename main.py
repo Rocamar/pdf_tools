@@ -27,13 +27,12 @@ class InteractivePDFViewer(ctk.CTkScrollableFrame):
         # Vincular evento de resize para modo responsivo
         self.bind("<Configure>", self._on_container_resize)
         
-        # Info panel - oculto por defecto en el nuevo diseño
-        self.info_frame = ctk.CTkFrame(self)
-        self.info_frame.pack(fill="x", padx=5, pady=5)
+        # Info panel - oculto en el nuevo diseño pro
+        self.info_frame = ctk.CTkFrame(self, height=1, fg_color="transparent")
+        # self.info_frame.pack(fill="x", padx=5, pady=5)
         
-        self.info_label = ctk.CTkLabel(self.info_frame, text="Ningún PDF cargado", 
-                                       font=("Arial", 11))
-        self.info_label.pack(pady=5)
+        self.info_label = ctk.CTkLabel(self.info_frame, text="", font=("Arial", 11))
+        # self.info_label.pack(pady=5)
         
     def load_pdf(self, file_path):
         """Carga y muestra las páginas del PDF de forma incremental"""
@@ -362,6 +361,9 @@ class PDFEditorApp(ctk.CTk):
 
         self.setup_sidebar()
         self.setup_viewer_area()
+        
+        # Seleccionar tab inicial
+        self.switch_tab("Editar")
 
         # Barra de Herramientas Flotante (opcional, se puede añadir después)
         # self.setup_floating_toolbar()
@@ -377,13 +379,14 @@ class PDFEditorApp(ctk.CTk):
         tabs_frame.pack(side="left", padx=20)
 
         nav_tabs = ["Todas las herramientas", "Editar", "Convertir", "Firma electrónica"]
+        self.nav_buttons = {}
         for tab in nav_tabs:
             btn = ctk.CTkButton(tabs_frame, text=tab, font=("Arial", 12), 
-                                fg_color="transparent", text_color="black", 
-                                hover_color="#f0f0f0", width=120, height=50, corner_radius=0)
+                                fg_color="transparent", text_color="#555555", 
+                                hover_color="#f0f0f0", width=120, height=50, corner_radius=0,
+                                command=lambda t=tab: self.switch_tab(t))
             btn.pack(side="left")
-            if tab == "Editar":
-                btn.configure(border_width=2, border_color="#000000", font=("Arial", 12, "bold"))
+            self.nav_buttons[tab] = btn
 
         # Herramientas de utilidad (lado derecho)
         utils_frame = ctk.CTkFrame(self.header, fg_color="transparent")
@@ -403,54 +406,88 @@ class PDFEditorApp(ctk.CTk):
     def save_current_pdf(self):
         """Guarda los cambios en el PDF actual"""
         if self.current_pdf_path:
-            # Aquí se llamaría a la lógica de guardado consolidada
-            messagebox.showinfo("Guardar", "Función de guardado rápido seleccionada. Usa aplicar en las herramientas para guardar versiones específicas.")
+            messagebox.showinfo("Guardar", "Función de guardado rápido seleccionada. Usa 'Aplicar' en las herramientas para guardar versiones específicas.")
         else:
             messagebox.showwarning("Aviso", "No hay ningún PDF abierto.")
 
-    def setup_sidebar(self):
-        """Crea la barra lateral de herramientas"""
-        self.sidebar = ctk.CTkScrollableFrame(self.main_container, width=280, corner_radius=0, 
-                                             fg_color="white", border_width=1, border_color="#e0e0e0")
-        self.sidebar.pack(side="left", fill="y", padx=0, pady=0)
+    def switch_tab(self, tab_name):
+        """Cambia la vista según el tab de navegación superior"""
+        # Actualizar estilo de botones
+        for name, btn in self.nav_buttons.items():
+            if name == tab_name:
+                btn.configure(text_color="black", font=("Arial", 12, "bold"), border_width=2, border_color="black")
+            else:
+                btn.configure(text_color="#555555", font=("Arial", 12), border_width=0)
+        
+        # Limpiar sidebar y cargar nuevo contenido
+        for widget in self.sidebar.winfo_children():
+            widget.destroy()
+            
+        if tab_name == "Todas las herramientas":
+            self.setup_all_tools_sidebar()
+        elif tab_name == "Editar":
+            self.setup_edit_sidebar()
+        elif tab_name == "Convertir":
+            self.setup_convert_sidebar()
+        elif tab_name == "Firma electrónica":
+            self.setup_sign_sidebar()
 
-        # Header de la barra lateral
+    def setup_header_utils(self, utils_frame):
+        # ... (se mantiene igual pero movido si es necesario)
+        pass
+
+    def setup_sidebar(self):
+        """Crea la estructura básica de la barra lateral"""
+        self.sidebar = ctk.CTkScrollableFrame(self.main_container, width=280, corner_radius=0, 
+                                             fg_color="white", border_width=0)
+        self.sidebar.pack(side="left", fill="y", padx=0, pady=0)
+        # Borde separador sutil
+        line = ctk.CTkFrame(self.main_container, width=1, fg_color="#e0e0e0")
+        line.pack(side="left", fill="y")
+
+    def setup_edit_sidebar(self):
+        """Carga las herramientas de edición en la barra lateral"""
+        # Header
         sidebar_header = ctk.CTkFrame(self.sidebar, fg_color="transparent")
         sidebar_header.pack(fill="x", padx=15, pady=(15, 20))
-        
         ctk.CTkLabel(sidebar_header, text="Editar", font=("Arial", 18, "bold"), text_color="black").pack(side="left")
-        ctk.CTkLabel(sidebar_header, text="⚙️", font=("Arial", 16), text_color="gray").pack(side="right", padx=5)
-        ctk.CTkLabel(sidebar_header, text="✕", font=("Arial", 16), text_color="gray").pack(side="right", padx=5)
 
-        # --- Grupo: MODIFICAR PAGINA ---
+        # Grupos
         self.create_sidebar_group("MODIFICAR PAGINA", [
             ("🔄", "Rotar PDF", self.select_tab_rotate),
             ("🗑️", "Eliminar páginas", self.select_tab_delete),
             ("📑", "Organizar páginas", self.select_tab_reorder),
             ("📑", "Dividir PDF", self.select_tab_split)
         ])
-
-        # --- Grupo: AGREGAR CONTENIDO ---
+        
         self.create_sidebar_group("AGREGAR CONTENIDO", [
             ("T+", "Texto", self.select_tab_add_text),
             ("🖼️", "Imagen", self.select_tab_add_image),
-            ("📅", "Encabezado y pie", None),
-            ("💧", "Marca de agua", None),
-            ("🔗", "Enlace", None)
         ])
 
-        # --- Grupo: OTRAS OPCIONES ---
-        self.create_sidebar_group("OTRAS OPCIONES", [
-            ("🔗", "Combinar archivos", self.select_tab_merge),
-            ("🚫", "Censurar un PDF", None),
-            ("📝", "Preparar un formulario", None)
-        ])
-
-        # --- Panel de Opciones Contextuales ---
         self.context_frame = ctk.CTkFrame(self.sidebar, fg_color="#f0f0f0", corner_radius=10)
         self.context_frame.pack(fill="x", padx=15, pady=20)
         self.context_label = ctk.CTkLabel(self.context_frame, text="Selecciona una herramienta", font=("Arial", 12, "italic"))
         self.context_label.pack(pady=20)
+
+    def setup_all_tools_sidebar(self):
+        ctk.CTkLabel(self.sidebar, text="Todas las herramientas", font=("Arial", 16, "bold"), text_color="black").pack(pady=20)
+        ctk.CTkLabel(self.sidebar, text="Vista general próximamente...", font=("Arial", 12), text_color="gray").pack()
+
+    def setup_convert_sidebar(self):
+        ctk.CTkLabel(self.sidebar, text="Convertir", font=("Arial", 16, "bold"), text_color="black").pack(pady=20)
+        self.create_sidebar_group("FORMATOS", [
+            ("📄", "A Word", None),
+            ("📊", "A Excel", None),
+            ("🖼️", "A Imagen", None),
+        ])
+
+    def setup_sign_sidebar(self):
+        ctk.CTkLabel(self.sidebar, text="Firma electrónica", font=("Arial", 16, "bold"), text_color="black").pack(pady=20)
+        self.create_sidebar_group("ACCIONES", [
+            ("🖋️", "Firmar yo mismo", None),
+            ("📧", "Solicitar firmas", None),
+        ])
 
     def create_sidebar_group(self, title, items):
         """Crea un grupo de herramientas en la barra lateral"""
@@ -490,7 +527,7 @@ class PDFEditorApp(ctk.CTk):
 
         # El visor de PDF propiamente dicho
         self.pdf_viewer = InteractivePDFViewer(self.viewer_container)
-        self.pdf_viewer.pack(fill="both", expand=True, padx=40, pady=(60, 20))
+        self.pdf_viewer.pack(fill="both", expand=True, padx=20, pady=(50, 10))
 
     def adjust_zoom(self, delta):
         self.zoom_level += delta
