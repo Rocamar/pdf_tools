@@ -292,3 +292,26 @@ def sign_pdf_digitally(input_path, output_path, certificate_path, password):
                 w, signers.PdfSignatureMetadata(field_name='Signature1'),
                 signer=signer, output=outf
             )
+
+def add_link_to_pdf(input_path, output_path, page_num, x, y, width, height, url):
+    """
+    Agrega un enlace (Annotation) a una página específica del PDF.
+    """
+    from pypdf import PdfReader, PdfWriter
+    from pypdf.generic import AnnotationBuilder
+    
+    reader = PdfReader(input_path)
+    writer = PdfWriter()
+    
+    for i, page in enumerate(reader.pages):
+        writer.add_page(page)
+        if i == page_num - 1:
+            # rect: [xLL, yLL, xUR, yUR]
+            link_ann = AnnotationBuilder.make_link_annotation(
+                rect=[x, y, x + width, y + height],
+                url=url
+            )
+            writer.add_annotation(page_number=i, annotation=link_ann)
+            
+    with open(output_path, "wb") as f:
+        writer.write(f)

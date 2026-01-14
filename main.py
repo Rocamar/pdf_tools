@@ -502,8 +502,13 @@ class PDFEditorApp(ctk.CTk):
         self.create_sidebar_group("AGREGAR CONTENIDO", [
             ("T+", "Texto", self.select_tab_add_text),
             ("🖼️", "Imagen", self.select_tab_add_image),
+            ("🔗", "Enlace", self.select_tab_link),
         ])
 
+        self.setup_context_frame()
+
+    def setup_context_frame(self):
+        """Crea el frame para las opciones de herramientas"""
         self.context_frame = ctk.CTkFrame(self.sidebar, fg_color="#f0f0f0", corner_radius=10)
         self.context_frame.pack(fill="x", padx=15, pady=20)
         self.context_label = ctk.CTkLabel(self.context_frame, text="Selecciona una herramienta", font=("Arial", 12, "italic"))
@@ -516,17 +521,19 @@ class PDFEditorApp(ctk.CTk):
     def setup_convert_sidebar(self):
         ctk.CTkLabel(self.sidebar, text="Convertir", font=("Arial", 16, "bold"), text_color="black").pack(pady=20)
         self.create_sidebar_group("FORMATOS", [
-            ("📄", "A Word", self.convert_to_word),
-            ("📊", "A Excel", self.convert_to_excel),
+            ("📄", "A Word / ODT", self.convert_to_word),
+            ("📊", "A Excel / ODS", self.convert_to_excel),
             ("🖼️", "A Imagen", self.process_export_images),
         ])
+        self.setup_context_frame()
 
     def setup_sign_sidebar(self):
         ctk.CTkLabel(self.sidebar, text="Firma electrónica", font=("Arial", 16, "bold"), text_color="black").pack(pady=20)
         self.create_sidebar_group("ACCIONES", [
-            ("🖋️", "Firmar yo mismo", self.select_tab_sign),
+            ("🖋️", "Firma Digital", self.select_tab_sign),
             ("📧", "Solicitar firmas", None),
         ])
+        self.setup_context_frame()
 
     def create_sidebar_group(self, title, items):
         """Crea un grupo de herramientas en la barra lateral"""
@@ -618,8 +625,88 @@ class PDFEditorApp(ctk.CTk):
         if not self.current_pdf_path:
             self.open_pdf_dialog()
         if self.current_pdf_path:
+            # Forzar actualización del sidebar para asegurar que el contexto se muestra
+            self.switch_tab("Firma electrónica") 
             self.pdf_viewer.set_interaction_mode('add_image') # Reutilizamos modo imagen para firma
             self.show_tool_options("Firma Electrónica", self.setup_sign_context)
+
+    def select_tab_link(self):
+        if not self.current_pdf_path:
+            self.open_pdf_dialog()
+        if self.current_pdf_path:
+            self.pdf_viewer.set_interaction_mode('add_link')
+            self.show_tool_options("Agregar Enlace", self.setup_link_context)
+
+    def setup_link_context(self, parent):
+        ctk.CTkLabel(parent, text="URL del enlace:").pack(pady=5)
+        self.entry_link_url = ctk.CTkEntry(parent, width=220)
+        self.entry_link_url.insert(0, "https://")
+        self.entry_link_url.pack(pady=5)
+        
+        ctk.CTkLabel(parent, text="Instrucciones: Haz clic en el PDF para marcar el área del enlace.").pack(pady=5, padx=10)
+        
+        self.pending_links = []
+        self.pending_links_list = ctk.CTkTextbox(parent, height=60, width=220, font=("Arial", 10))
+        self.pending_links_list.pack(pady=5)
+        self.pending_links_list.configure(state="disabled")
+
+        btn_apply = ctk.CTkButton(parent, text="Aplicar Enlaces y Guardar", command=self.apply_links, fg_color="#28a745")
+        btn_apply.pack(pady=10)
+        
+        self.pdf_viewer.on_click_callback = self.on_pdf_click_add_link
+
+    def on_pdf_click_add_link(self, page_num, x, y):
+        url = self.entry_link_url.get()
+        if not url:
+            messagebox.showwarning("Aviso", "Ingresa una URL primero.")
+            return
+
+        link_data = {
+            'page_num': page_num,
+            'x': x,
+            'y': y,
+            'width': 100, # Ancho por defecto
+            'height': 20, # Alto por defecto
+            'url': url
+        }
+        self.pending_links.append(link_data)
+        
+        # Overlay visual
+        self.pdf_viewer.draw_text_overlay(page_num, x, y, f"Link: {url}", font_size=8)
+        
+        self.update_pending_links_list()
+
+    def update_pending_links_list(self):
+        self.pending_links_list.configure(state="normal")
+        self.pending_links_list.delete("0.0", "end")
+        for link in self.pending_links:
+            self.pending_links_list.insert("end", f"P{link['page_num']}: {link['url']}\n")
+        self.pending_links_list.configure(state="disabled")
+
+    def apply_links(self):
+        if not self.pending_links:
+            messagebox.showwarning("Aviso", "No hay enlaces para aplicar.")
+            return
+            
+        output = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")])
+        if output:
+            try:
+                current_file = self.current_pdf_path
+                for link in self.pending_links:
+                    pdf_tools.add_link_to_pdf(
+                        current_file, output, 
+                        link['page_num'], link['x'], link['y'], 
+                        link['width'], link['height'], link['url']
+                    )
+                    current_file = output
+                
+                messagebox.showinfo("Éxito", f"Enlaces aplicados correctamente en: {output}")
+                self.pending_links = []
+                self.update_pending_links_list()
+                self.pdf_viewer.clear_overlays()
+                self.load_pdf_in_viewer(output)
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
 
     def setup_sign_context(self, parent):
         tab_view = ctk.CTkTabview(parent, height=300)
@@ -681,27 +768,31 @@ class PDFEditorApp(ctk.CTk):
 
     def convert_to_word(self):
         if not self.current_pdf_path:
-            messagebox.showwarning("Aviso", "Abre un PDF primero.")
-            return
+            self.open_pdf_dialog()
+        if not self.current_pdf_path: return
         
-        output = filedialog.asksaveasfilename(defaultextension=".docx", filetypes=[("Word files", "*.docx")])
+        output = filedialog.asksaveasfilename(defaultextension=".docx", 
+                                             filetypes=[("Word / Writer", "*.docx *.odt")])
         if output:
             try:
+                # Nota: pdf2docx genera .docx, que LibreOffice Writer abre nativamente como su estándar moderno.
                 pdf_tools.convert_pdf_to_word(self.current_pdf_path, output)
-                messagebox.showinfo("Éxito", f"PDF convertido a Word en: {output}")
+                messagebox.showinfo("Éxito", f"PDF convertido correctamente (Compatible con Word y Writer): {output}")
             except Exception as e:
                 messagebox.showerror("Error", f"No se pudo convertir: {str(e)}")
 
     def convert_to_excel(self):
         if not self.current_pdf_path:
-            messagebox.showwarning("Aviso", "Abre un PDF primero.")
-            return
+            self.open_pdf_dialog()
+        if not self.current_pdf_path: return
         
-        output = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel files", "*.xlsx")])
+        output = filedialog.asksaveasfilename(defaultextension=".xlsx", 
+                                             filetypes=[("Excel / Calc", "*.xlsx *.ods")])
         if output:
             try:
+                # Nota: El formato .xlsx es el estándar moderno compatible con Excel y Calc.
                 pdf_tools.convert_pdf_to_excel(self.current_pdf_path, output)
-                messagebox.showinfo("Éxito", f"Tablas extraídas a Excel en: {output}")
+                messagebox.showinfo("Éxito", f"Tablas extraídas correctamente (Compatible con Excel y Calc): {output}")
             except Exception as e:
                 messagebox.showerror("Error", f"No se pudo extraer: {str(e)}")
 
