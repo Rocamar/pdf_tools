@@ -174,7 +174,8 @@ class InteractivePDFViewer(ctk.CTkScrollableFrame):
             'width': img.width,
             'height': img.height,
             'pdf_width': pdf_w,
-            'pdf_height': pdf_h
+            'pdf_height': pdf_h,
+            'frame': page_frame
         }
         self.pages_data.append(page_data)
         
@@ -345,6 +346,7 @@ class PDFEditorApp(ctk.CTk):
 
         # --- Variables de Estado ---
         self.current_pdf_path = None
+        self.zoom_level = 1.0
         # Variables para cambios pendientes
         self.pending_texts = []
         self.pending_images = []
@@ -392,9 +394,10 @@ class PDFEditorApp(ctk.CTk):
         utils_frame = ctk.CTkFrame(self.header, fg_color="transparent")
         utils_frame.pack(side="right", padx=20)
 
-        search_entry = ctk.CTkEntry(utils_frame, placeholder_text="Buscar texto o herramientas...", 
+        self.search_entry = ctk.CTkEntry(utils_frame, placeholder_text="Buscar texto...", 
                                    width=250, height=30, font=("Arial", 12))
-        search_entry.pack(side="left", padx=10)
+        self.search_entry.pack(side="left", padx=10)
+        self.search_entry.bind("<Return>", lambda e: self.perform_search())
 
         # Iconos (Guardar, Compartir, etc)
         btn_save = ctk.CTkButton(utils_frame, text="💾", width=30, height=30, fg_color="transparent", text_color="black", font=("Arial", 16), command=self.save_current_pdf)
@@ -409,6 +412,41 @@ class PDFEditorApp(ctk.CTk):
             messagebox.showinfo("Guardar", "Función de guardado rápido seleccionada. Usa 'Aplicar' en las herramientas para guardar versiones específicas.")
         else:
             messagebox.showwarning("Aviso", "No hay ningún PDF abierto.")
+
+    def perform_search(self):
+        """Busca texto en el PDF actual y desplaza la vista"""
+        query = self.search_entry.get().strip()
+        if not query:
+            return
+        
+        if not self.current_pdf_path:
+            messagebox.showwarning("Aviso", "Abre un PDF primero.")
+            return
+
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(self.current_pdf_path)
+            found_page = -1
+            
+            for i, page in enumerate(reader.pages):
+                text = page.extract_text()
+                if query.lower() in text.lower():
+                    found_page = i + 1
+                    break
+            
+            if found_page != -1:
+                # Buscar el frame de la página en el visor
+                for data in self.pdf_viewer.pages_data:
+                    if data['page_num'] == found_page:
+                        # Desplazar el scrollable frame hasta el widget
+                        self.pdf_viewer.see(data['frame'])
+                        # Un pequeño feedback visual opcional podría ser resaltar el borde
+                        break
+                messagebox.showinfo("Búsqueda", f"Término encontrado en la página {found_page}")
+            else:
+                messagebox.showinfo("Búsqueda", "No se encontró el término.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Error en la búsqueda: {str(e)}")
 
     def switch_tab(self, tab_name):
         """Cambia la vista según el tab de navegación superior"""
