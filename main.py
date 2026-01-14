@@ -364,7 +364,8 @@ class PDFEditorApp(ctk.CTk):
         self.setup_sidebar()
         self.setup_viewer_area()
         
-        # Seleccionar tab inicial
+        # Seleccionar tab inicial y modo de zoom por defecto
+        self.pdf_viewer.zoom_mode = 'fit_width'
         self.switch_tab("Editar")
 
         # Barra de Herramientas Flotante (opcional, se puede añadir después)
@@ -515,15 +516,15 @@ class PDFEditorApp(ctk.CTk):
     def setup_convert_sidebar(self):
         ctk.CTkLabel(self.sidebar, text="Convertir", font=("Arial", 16, "bold"), text_color="black").pack(pady=20)
         self.create_sidebar_group("FORMATOS", [
-            ("📄", "A Word", None),
-            ("📊", "A Excel", None),
-            ("🖼️", "A Imagen", None),
+            ("📄", "A Word", self.convert_to_word_stub),
+            ("📊", "A Excel", self.convert_to_excel_stub),
+            ("🖼️", "A Imagen", self.process_export_images),
         ])
 
     def setup_sign_sidebar(self):
         ctk.CTkLabel(self.sidebar, text="Firma electrónica", font=("Arial", 16, "bold"), text_color="black").pack(pady=20)
         self.create_sidebar_group("ACCIONES", [
-            ("🖋️", "Firmar yo mismo", None),
+            ("🖋️", "Firmar yo mismo", self.select_tab_sign),
             ("📧", "Solicitar firmas", None),
         ])
 
@@ -587,23 +588,84 @@ class PDFEditorApp(ctk.CTk):
 
     # --- Handlers adaptados ---
     def select_tab_rotate(self):
-        self.open_pdf_dialog()
-        self.show_tool_options("Rotar PDF", self.setup_rotate_context)
+        if not self.current_pdf_path:
+            self.open_pdf_dialog()
+        if self.current_pdf_path:
+            self.show_tool_options("Rotar PDF", self.setup_rotate_context)
     
     def select_tab_delete(self):
-        self.open_pdf_dialog()
-        self.pdf_viewer.set_interaction_mode('select_pages')
-        self.show_tool_options("Eliminar Páginas", self.setup_delete_context)
+        if not self.current_pdf_path:
+            self.open_pdf_dialog()
+        if self.current_pdf_path:
+            self.pdf_viewer.set_interaction_mode('select_pages')
+            self.show_tool_options("Eliminar Páginas", self.setup_delete_context)
     
     def select_tab_add_text(self):
-        self.open_pdf_dialog()
-        self.pdf_viewer.set_interaction_mode('add_text')
-        self.show_tool_options("Agregar Texto", self.setup_add_text_context)
+        if not self.current_pdf_path:
+            self.open_pdf_dialog()
+        if self.current_pdf_path:
+            self.pdf_viewer.set_interaction_mode('add_text')
+            self.show_tool_options("Agregar Texto", self.setup_add_text_context)
         
     def select_tab_add_image(self):
-        self.open_pdf_dialog()
-        self.pdf_viewer.set_interaction_mode('add_image')
-        self.show_tool_options("Agregar Imagen", self.setup_add_image_context)
+        if not self.current_pdf_path:
+            self.open_pdf_dialog()
+        if self.current_pdf_path:
+            self.pdf_viewer.set_interaction_mode('add_image')
+            self.show_tool_options("Agregar Imagen", self.setup_add_image_context)
+
+    def select_tab_sign(self):
+        if not self.current_pdf_path:
+            self.open_pdf_dialog()
+        if self.current_pdf_path:
+            self.pdf_viewer.set_interaction_mode('add_image') # Reutilizamos modo imagen para firma
+            self.show_tool_options("Firma Electrónica", self.setup_sign_context)
+
+    def setup_sign_context(self, parent):
+        ctk.CTkLabel(parent, text="Sube tu imagen de firma (PNG recomendado):").pack(pady=5)
+        btn_sel = ctk.CTkButton(parent, text="Seleccionar Firma", command=self.select_signature_image)
+        btn_sel.pack(pady=5)
+        
+        # Reutilizamos image_to_add para la firma
+        self.lbl_sign_status = ctk.CTkLabel(parent, text="Sin firma seleccionada", font=("Arial", 10))
+        self.lbl_sign_status.pack()
+        
+        ctk.CTkLabel(parent, text="Instrucciones: Haz clic en el PDF para estampar la firma.").pack(pady=5, padx=10)
+        
+        btn_apply = ctk.CTkButton(parent, text="Aplicar Firma y Guardar", command=self.apply_images, fg_color="#007bff")
+        btn_apply.pack(pady=10)
+
+    def select_signature_image(self):
+        f = filedialog.askopenfilename(filetypes=[("Image files", "*.png *.jpg *.jpeg")])
+        if f:
+            self.image_to_add = f
+            self.lbl_sign_status.configure(text=os.path.basename(f))
+            # Ajustar tamaño por defecto para firmas
+            if hasattr(self, 'entry_width_image'):
+                self.entry_width_image.delete(0, 'end')
+                self.entry_width_image.insert(0, "150")
+            if hasattr(self, 'entry_height_image'):
+                self.entry_height_image.delete(0, 'end')
+                self.entry_height_image.insert(0, "50")
+
+    def process_export_images(self):
+        if not self.current_pdf_path:
+            messagebox.showwarning("Aviso", "Abre un PDF primero.")
+            return
+        
+        output_dir = filedialog.askdirectory(title="Selecciona carpeta de destino")
+        if output_dir:
+            try:
+                pdf_tools.export_pdf_to_images(self.current_pdf_path, output_dir)
+                messagebox.showinfo("Éxito", f"Imágenes exportadas a {output_dir}")
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
+
+    def convert_to_word_stub(self):
+        messagebox.showinfo("Convertir a Word", "Esta función requiere la integración con servicios de nube o librerías pesadas como pdf2docx. Implementación básica próximamente.")
+
+    def convert_to_excel_stub(self):
+        messagebox.showinfo("Convertir a Excel", "Esta función utiliza extracción de tablas. Implementación básica próximamente.")
 
     def setup_add_text_context(self, parent):
         ctk.CTkLabel(parent, text="Texto a agregar:").pack(pady=5)
@@ -685,12 +747,16 @@ class PDFEditorApp(ctk.CTk):
         self.pdf_viewer.on_click_callback = self.on_pdf_click_add_image
     
     def select_tab_reorder(self):
-        self.open_pdf_dialog()
-        self.show_tool_options("Reordenar Páginas", self.setup_reorder_context)
+        if not self.current_pdf_path:
+            self.open_pdf_dialog()
+        if self.current_pdf_path:
+            self.show_tool_options("Reordenar Páginas", self.setup_reorder_context)
 
     def select_tab_split(self):
-        self.open_pdf_dialog()
-        self.show_tool_options("Dividir PDF", self.setup_split_context)
+        if not self.current_pdf_path:
+            self.open_pdf_dialog()
+        if self.current_pdf_path:
+            self.show_tool_options("Dividir PDF", self.setup_split_context)
 
     def select_tab_merge(self):
         self.show_tool_options("Unir PDFs", self.setup_merge_context)

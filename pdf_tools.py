@@ -222,3 +222,21 @@ def pdf_to_images(file_path, dpi=150, max_pages=None):
     
     return images
 
+def export_pdf_to_images(file_path, output_dir, dpi=150):
+    """
+    Exporta todas las páginas de un PDF como archivos de imagen individuales.
+    """
+    from pdf2image import convert_from_path
+    import os
+    
+    images = convert_from_path(file_path, dpi=dpi)
+    base_name = os.path.splitext(os.path.basename(file_path))[0]
+    
+    generated_paths = []
+    for i, image in enumerate(images):
+        output_filename = f"{base_name}_page_{i+1}.png"
+        full_path = os.path.join(output_dir, output_filename)
+        image.save(full_path, "PNG")
+        generated_paths.append(full_path)
+        
+    return generated_paths
