@@ -446,6 +446,12 @@ class PDFEditorApp(ctk.CTk):
             ("📝", "Preparar un formulario", None)
         ])
 
+        # --- Panel de Opciones Contextuales ---
+        self.context_frame = ctk.CTkFrame(self.sidebar, fg_color="#f0f0f0", corner_radius=10)
+        self.context_frame.pack(fill="x", padx=15, pady=20)
+        self.context_label = ctk.CTkLabel(self.context_frame, text="Selecciona una herramienta", font=("Arial", 12, "italic"))
+        self.context_label.pack(pady=20)
+
     def create_sidebar_group(self, title, items):
         """Crea un grupo de herramientas en la barra lateral"""
         group_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
@@ -492,12 +498,6 @@ class PDFEditorApp(ctk.CTk):
         self.zoom_label.configure(text=f"{int(self.zoom_level*100)}%")
         self.pdf_viewer.set_zoom(self.zoom_level)
 
-        # --- Panel de Opciones Contextuales (se llena dinámicamente) ---
-        self.context_frame = ctk.CTkFrame(self.sidebar, fg_color="#f0f0f0", corner_radius=10)
-        self.context_frame.pack(fill="x", padx=15, pady=20)
-        self.context_label = ctk.CTkLabel(self.context_frame, text="Selecciona una herramienta", font=("Arial", 12, "italic"))
-        self.context_label.pack(pady=20)
-
     def show_tool_options(self, tool_name, setup_func):
         """Limpia el panel contextual y carga las opciones de la herramienta"""
         for widget in self.context_frame.winfo_children():
@@ -509,9 +509,6 @@ class PDFEditorApp(ctk.CTk):
         # Ejecutar función de configuración del panel
         setup_func(self.context_frame)
 
-    def create_sidebar_group(self, title, items):
-        # ... (código existente igual)
-        pass
 
     # --- Handlers adaptados ---
     def select_tab_rotate(self):
@@ -542,10 +539,35 @@ class PDFEditorApp(ctk.CTk):
         self.entry_font_size = ctk.CTkEntry(parent, width=60)
         self.entry_font_size.insert(0, "12")
         self.entry_font_size.pack(pady=2)
+
+        # Paleta de colores simplificada
+        self.predefined_colors = [
+            ("Negro", "#000000", (0, 0, 0)),
+            ("Rojo", "#FF0000", (255, 0, 0)),
+            ("Azul", "#0000FF", (0, 0, 255)),
+            ("Verde", "#00FF00", (0, 255, 0)),
+        ]
+        self.selected_text_color = (0, 0, 0)
         
-        # Reutilizar lógica de color si es posible, o simplificar para la barra lateral
-        btn_apply = ctk.CTkButton(parent, text="Aplicar Cambios", command=self.apply_texts, fg_color="#0066cc")
-        btn_apply.pack(pady=15)
+        color_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        color_frame.pack(pady=5)
+        for _, hex_color, rgb in self.predefined_colors:
+            ctk.CTkButton(color_frame, text="", width=30, height=30, fg_color=hex_color,
+                          command=lambda c=rgb, h=hex_color: self.select_text_color(c, h)).pack(side="left", padx=2)
+        
+        self.selected_color_display = ctk.CTkLabel(parent, text="Color: Negro", font=("Arial", 10))
+        self.selected_color_display.pack()
+
+        # Lista de textos pendientes (mini)
+        self.pending_texts_list = ctk.CTkTextbox(parent, height=60, width=220, font=("Arial", 10))
+        self.pending_texts_list.pack(pady=5)
+        self.pending_texts_list.configure(state="disabled")
+
+        btn_apply = ctk.CTkButton(parent, text="Aplicar y Guardar", command=self.apply_texts, fg_color="#28a745")
+        btn_apply.pack(pady=10)
+        
+        # Vincular callback del visor
+        self.pdf_viewer.on_click_callback = self.on_pdf_click_add_text
 
     def setup_rotate_context(self, parent):
         self.rotate_var = ctk.StringVar(value="90")
@@ -565,9 +587,27 @@ class PDFEditorApp(ctk.CTk):
         ctk.CTkButton(parent, text="Seleccionar Imagen", command=self.select_image_to_add).pack(pady=10)
         self.lbl_image_to_add = ctk.CTkLabel(parent, text="Sin imagen", font=("Arial", 10))
         self.lbl_image_to_add.pack()
+
+        dim_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        dim_frame.pack(pady=5)
+        ctk.CTkLabel(dim_frame, text="W:").pack(side="left")
+        self.entry_width_image = ctk.CTkEntry(dim_frame, width=50)
+        self.entry_width_image.insert(0, "200")
+        self.entry_width_image.pack(side="left", padx=2)
+        ctk.CTkLabel(dim_frame, text="H:").pack(side="left")
+        self.entry_height_image = ctk.CTkEntry(dim_frame, width=50)
+        self.entry_height_image.insert(0, "200")
+        self.entry_height_image.pack(side="left", padx=2)
         
-        btn_apply = ctk.CTkButton(parent, text="Aplicar y Guardar", command=self.apply_images, fg_color="#0066cc")
-        btn_apply.pack(pady=15)
+        self.pending_images_list = ctk.CTkTextbox(parent, height=60, width=220, font=("Arial", 10))
+        self.pending_images_list.pack(pady=5)
+        self.pending_images_list.configure(state="disabled")
+
+        btn_apply = ctk.CTkButton(parent, text="Aplicar y Guardar", command=self.apply_images, fg_color="#28a745")
+        btn_apply.pack(pady=10)
+        
+        # Vincular callback
+        self.pdf_viewer.on_click_callback = self.on_pdf_click_add_image
     
     def select_tab_reorder(self):
         self.open_pdf_dialog()
@@ -658,65 +698,51 @@ class PDFEditorApp(ctk.CTk):
             except Exception as e:
                 messagebox.showerror("Error", str(e))
 
-    def select_file_split(self):
-        f = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")])
-        if f:
-            self.split_file = f
-            self.lbl_split_file.configure(text=os.path.basename(f))
-            self.load_pdf_in_viewer(f)
-
     def process_split(self):
-        if not self.split_file:
-            messagebox.showwarning("Aviso", "Selecciona un archivo primero.")
+        if not self.current_pdf_path:
+            messagebox.showwarning("Aviso", "Abre un PDF primero.")
             return
 
         output_dir = filedialog.askdirectory()
         if output_dir:
             try:
-                pdf_tools.split_pdf(self.split_file, output_dir)
+                pdf_tools.split_pdf(self.current_pdf_path, output_dir)
                 messagebox.showinfo("Éxito", f"PDF dividido en {output_dir}")
             except Exception as e:
                 messagebox.showerror("Error", str(e))
 
-    def select_file_rotate(self):
-        f = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")])
-        if f:
-            self.rotate_file = f
-            self.lbl_rotate_file.configure(text=os.path.basename(f))
-            self.load_pdf_in_viewer(f)
-
     def process_rotate(self):
-        if not self.rotate_file:
-            messagebox.showwarning("Aviso", "Selecciona un archivo primero.")
+        if not self.current_pdf_path:
+            messagebox.showwarning("Aviso", "Abre un PDF primero.")
             return
         
         output = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")])
         if output:
             try:
                 degrees = int(self.rotate_var.get())
-                pdf_tools.rotate_pdf(self.rotate_file, degrees, output)
+                pdf_tools.rotate_pdf(self.current_pdf_path, degrees, output)
                 messagebox.showinfo("Éxito", "PDF rotado correctamente.")
+                self.current_pdf_path = output
+                self.pdf_viewer.load_pdf(output)
             except Exception as e:
                 messagebox.showerror("Error", str(e))
 
-    def select_file_extract(self):
-        f = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")])
-        if f:
-            self.extract_file = f
-            self.lbl_extract_file.configure(text=os.path.basename(f))
-            self.load_pdf_in_viewer(f)
-
     def process_extract(self):
-        if not self.extract_file:
-            messagebox.showwarning("Aviso", "Selecciona un archivo primero.")
+        if not self.current_pdf_path:
+            messagebox.showwarning("Aviso", "Abre un PDF primero.")
             return
         
         try:
-            text = pdf_tools.extract_text(self.extract_file)
-            self.textbox_extract.configure(state="normal")
-            self.textbox_extract.delete("0.0", "end")
-            self.textbox_extract.insert("0.0", text)
-            self.textbox_extract.configure(state="disabled")
+            text = pdf_tools.extract_text(self.current_pdf_path)
+            # Mostrar texto en un cuadro emergente o en la sidebar si fuera necesario
+            # Por ahora, abrimos un diálogo simple
+            from tkinter import scrolledtext
+            top = ctk.CTkToplevel(self)
+            top.title("Texto Extraído")
+            top.geometry("600x400")
+            txt = scrolledtext.ScrolledText(top, width=80, height=20)
+            txt.pack(fill="both", expand=True)
+            txt.insert("1.0", text)
         except Exception as e:
             messagebox.showerror("Error", str(e))
 
@@ -736,14 +762,6 @@ class PDFEditorApp(ctk.CTk):
                 messagebox.showerror("Error", str(e))
 
     # --- Interactive Editing Operations ---
-
-    def select_file_add_text(self):
-        f = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")])
-        if f:
-            self.add_text_file = f
-            self.lbl_add_text_file.configure(text=os.path.basename(f))
-            self.load_pdf_in_viewer(f)
-            self.pdf_viewer.set_interaction_mode('add_text')
     
     def select_text_color(self, rgb, hex_color):
         """Selecciona un color de la paleta predefinida"""
@@ -824,8 +842,8 @@ class PDFEditorApp(ctk.CTk):
 
     def apply_texts(self):
         """Aplica todos los textos pendientes al PDF"""
-        if not self.add_text_file:
-            messagebox.showwarning("Aviso", "Selecciona un archivo PDF primero.")
+        if not self.current_pdf_path:
+            messagebox.showwarning("Aviso", "Abre un PDF primero.")
             return
         
         if not self.pending_texts:
@@ -835,36 +853,21 @@ class PDFEditorApp(ctk.CTk):
         output = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")])
         if output:
             try:
-                # Aplicar cada texto
-                current_file = self.add_text_file
+                current_file = self.current_pdf_path
+                # Para evitar loops infinitos de archivos temporales manejamos esto con cuidado
                 for i, item in enumerate(self.pending_texts):
-                    if i == len(self.pending_texts) - 1:
-                        # Último texto, guardar en output
-                        pdf_tools.add_text_to_pdf(current_file, output, item['text'], 
-                                                 item['page'], item['x'], item['y'], 
-                                                 item['font_size'], item['color'])
-                    else:
-                        # Textos intermedios, guardar en temporal
-                        temp_file = f"/tmp/temp_pdf_{i}.pdf"
-                        pdf_tools.add_text_to_pdf(current_file, temp_file, item['text'], 
-                                                 item['page'], item['x'], item['y'], 
-                                                 item['font_size'], item['color'])
-                        current_file = temp_file
+                    temp_output = output if i == len(self.pending_texts) - 1 else f"/tmp/tp_{i}.pdf"
+                    pdf_tools.add_text_to_pdf(current_file, temp_output, item['text'], 
+                                             item['page'], item['x'], item['y'], 
+                                             item['font_size'], item['color'])
+                    current_file = temp_output
                 
-                messagebox.showinfo("Éxito", f"{len(self.pending_texts)} texto(s) agregado(s) correctamente.")
+                messagebox.showinfo("Éxito", f"{len(self.pending_texts)} texto(s) agregado(s).")
                 self.clear_pending_texts()
+                self.current_pdf_path = output
+                self.pdf_viewer.load_pdf(output)
             except Exception as e:
                 messagebox.showerror("Error", str(e))
-
-    def select_file_add_image(self):
-        f = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")])
-        if f:
-            self.add_image_file = f
-            self.lbl_add_image_file.configure(text=os.path.basename(f))
-            self.load_pdf_in_viewer(f)
-            self.pdf_viewer.set_interaction_mode('add_image')
-            # Configurar callback
-            self.pdf_viewer.on_click_callback = self.on_pdf_click_add_image
 
     def select_image_to_add(self):
         f = filedialog.askopenfilename(filetypes=[("Image files", "*.png *.jpg *.jpeg *.gif *.bmp")])
@@ -918,8 +921,8 @@ class PDFEditorApp(ctk.CTk):
 
     def apply_images(self):
         """Aplica todas las imágenes pendientes al PDF"""
-        if not self.add_image_file:
-            messagebox.showwarning("Aviso", "Selecciona un archivo PDF primero.")
+        if not self.current_pdf_path:
+            messagebox.showwarning("Aviso", "Abre un PDF primero.")
             return
         
         if not self.pending_images:
@@ -929,52 +932,24 @@ class PDFEditorApp(ctk.CTk):
         output = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")])
         if output:
             try:
-                # Aplicar cada imagen
-                current_file = self.add_image_file
+                current_file = self.current_pdf_path
                 for i, item in enumerate(self.pending_images):
-                    if i == len(self.pending_images) - 1:
-                        # Última imagen, guardar en output
-                        pdf_tools.add_image_to_pdf(current_file, output, item['path'], 
-                                                  item['page'], item['x'], item['y'], 
-                                                  item['width'], item['height'])
-                    else:
-                        # Imágenes intermedias, guardar en temporal
-                        temp_file = f"/tmp/temp_pdf_img_{i}.pdf"
-                        pdf_tools.add_image_to_pdf(current_file, temp_file, item['path'], 
-                                                  item['page'], item['x'], item['y'], 
-                                                  item['width'], item['height'])
-                        current_file = temp_file
+                    temp_output = output if i == len(self.pending_images) - 1 else f"/tmp/tp_img_{i}.pdf"
+                    pdf_tools.add_image_to_pdf(current_file, temp_output, item['path'], 
+                                              item['page'], item['x'], item['y'], 
+                                              item['width'], item['height'])
+                    current_file = temp_output
                 
-                messagebox.showinfo("Éxito", f"{len(self.pending_images)} imagen(es) agregada(s) correctamente.")
+                messagebox.showinfo("Éxito", f"{len(self.pending_images)} imagen(es) agregadas.")
                 self.clear_pending_images()
+                self.current_pdf_path = output
+                self.pdf_viewer.load_pdf(output)
             except Exception as e:
                 messagebox.showerror("Error", str(e))
 
-    def select_file_delete_pages(self):
-        f = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")])
-        if f:
-            self.delete_pages_file = f
-            self.lbl_delete_pages_file.configure(text=os.path.basename(f))
-            self.load_pdf_in_viewer(f)
-            self.pdf_viewer.set_interaction_mode('select_pages')
-            # Configurar callback
-            self.pdf_viewer.on_click_callback = self.on_pdf_click_delete_page
-            # Mostrar número total de páginas
-            try:
-                from pypdf import PdfReader
-                reader = PdfReader(f)
-                total = len(reader.pages)
-                self.lbl_total_pages_delete.configure(text=f"Total de páginas: {total}")
-            except:
-                pass
-
-    def on_pdf_click_delete_page(self, page_num, pdf_x, pdf_y, img_x, img_y):
-        """Callback cuando se hace clic en una página para marcar/desmarcar"""
-        self.pdf_viewer.toggle_page_selection(page_num)
-
     def process_delete_pages(self):
-        if not self.delete_pages_file:
-            messagebox.showwarning("Aviso", "Selecciona un archivo PDF primero.")
+        if not self.current_pdf_path:
+            messagebox.showwarning("Aviso", "Abre un PDF primero.")
             return
         
         if not self.pdf_viewer.selected_pages:
@@ -986,30 +961,17 @@ class PDFEditorApp(ctk.CTk):
         output = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")])
         if output:
             try:
-                pdf_tools.delete_pages(self.delete_pages_file, output, pages_to_delete)
-                messagebox.showinfo("Éxito", f"{len(pages_to_delete)} página(s) eliminada(s) correctamente.")
+                pdf_tools.delete_pages(self.current_pdf_path, output, pages_to_delete)
+                messagebox.showinfo("Éxito", f"{len(pages_to_delete)} página(s) eliminada(s).")
                 self.pdf_viewer.selected_pages.clear()
+                self.current_pdf_path = output
+                self.pdf_viewer.load_pdf(output)
             except Exception as e:
                 messagebox.showerror("Error", str(e))
 
-    def select_file_reorder(self):
-        f = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")])
-        if f:
-            self.reorder_file = f
-            self.lbl_reorder_file.configure(text=os.path.basename(f))
-            self.load_pdf_in_viewer(f)
-            # Mostrar número total de páginas
-            try:
-                from pypdf import PdfReader
-                reader = PdfReader(f)
-                total = len(reader.pages)
-                self.lbl_total_pages_reorder.configure(text=f"Total de páginas: {total}")
-            except:
-                pass
-
     def process_reorder(self):
-        if not self.reorder_file:
-            messagebox.showwarning("Aviso", "Selecciona un archivo PDF primero.")
+        if not self.current_pdf_path:
+            messagebox.showwarning("Aviso", "Abre un PDF primero.")
             return
         
         order_str = self.entry_new_order.get()
@@ -1018,15 +980,17 @@ class PDFEditorApp(ctk.CTk):
             return
         
         try:
-            # Parsear la entrada (ej: "3,1,2,4" -> [3,1,2,4])
+            # Parsear la entrada (ej: "3,1,2" -> [3,1,2])
             new_order = [int(x.strip()) for x in order_str.split(',')]
             
             output = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")])
             if output:
-                pdf_tools.reorder_pages(self.reorder_file, output, new_order)
+                pdf_tools.reorder_pages(self.current_pdf_path, output, new_order)
                 messagebox.showinfo("Éxito", "Páginas reordenadas correctamente.")
+                self.current_pdf_path = output
+                self.pdf_viewer.load_pdf(output)
         except ValueError:
-            messagebox.showerror("Error", "Formato inválido. Usa formato como: 3,1,2,4")
+            messagebox.showerror("Error", "Formato inválido. Usa: 3,1,2")
         except Exception as e:
             messagebox.showerror("Error", str(e))
 
