@@ -240,3 +240,55 @@ def export_pdf_to_images(file_path, output_dir, dpi=150):
         generated_paths.append(full_path)
         
     return generated_paths
+
+def convert_pdf_to_word(input_path, output_path):
+    """
+    Convierte un PDF a formato Word (.docx) usando pdf2docx.
+    """
+    from pdf2docx import Converter
+    cv = Converter(input_path)
+    cv.convert(output_path, start=0, end=None)
+    cv.close()
+
+def convert_pdf_to_excel(input_path, output_path):
+    """
+    Extrae tablas de un PDF a formato Excel (.xlsx) usando pdfplumber y pandas.
+    """
+    import pdfplumber
+    import pandas as pd
+    
+    all_tables = []
+    with pdfplumber.open(input_path) as pdf:
+        for page in pdf.pages:
+            tables = page.extract_tables()
+            for table in tables:
+                df = pd.DataFrame(table[1:], columns=table[0])
+                all_tables.append(df)
+    
+    if all_tables:
+        with pd.ExcelWriter(output_path) as writer:
+            for i, df in enumerate(all_tables):
+                df.to_excel(writer, sheet_name=f'Tabla_{i+1}', index=False)
+    else:
+        raise ValueError("No se encontraron tablas en el PDF.")
+
+def sign_pdf_digitally(input_path, output_path, certificate_path, password):
+    """
+    Firma digitalmente un PDF usando un certificado .p12 o .pfx y pyHanko.
+    """
+    from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
+    from pyhanko.sign import signers
+    from pyhanko.sign.fields import SigSeedValueSpec
+    
+    signer = signers.P12Signer(
+        p12_file=certificate_path,
+        passphrase=password.encode() if password else None
+    )
+    
+    with open(input_path, 'rb') as inf:
+        w = IncrementalPdfFileWriter(inf)
+        with open(output_path, 'wb') as outf:
+            signers.sign_pdf(
+                w, signers.PdfSignatureMetadata(field_name='Signature1'),
+                signer=signer, output=outf
+            )

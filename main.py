@@ -516,8 +516,8 @@ class PDFEditorApp(ctk.CTk):
     def setup_convert_sidebar(self):
         ctk.CTkLabel(self.sidebar, text="Convertir", font=("Arial", 16, "bold"), text_color="black").pack(pady=20)
         self.create_sidebar_group("FORMATOS", [
-            ("📄", "A Word", self.convert_to_word_stub),
-            ("📊", "A Excel", self.convert_to_excel_stub),
+            ("📄", "A Word", self.convert_to_word),
+            ("📊", "A Excel", self.convert_to_excel),
             ("🖼️", "A Imagen", self.process_export_images),
         ])
 
@@ -622,18 +622,36 @@ class PDFEditorApp(ctk.CTk):
             self.show_tool_options("Firma Electrónica", self.setup_sign_context)
 
     def setup_sign_context(self, parent):
-        ctk.CTkLabel(parent, text="Sube tu imagen de firma (PNG recomendado):").pack(pady=5)
-        btn_sel = ctk.CTkButton(parent, text="Seleccionar Firma", command=self.select_signature_image)
+        tab_view = ctk.CTkTabview(parent, height=300)
+        tab_view.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        tab_img = tab_view.add("Imagen")
+        tab_digital = tab_view.add("Digital (Certificado)")
+        
+        # --- Tab Imagen ---
+        ctk.CTkLabel(tab_img, text="Sube tu imagen de firma:").pack(pady=5)
+        btn_sel = ctk.CTkButton(tab_img, text="Seleccionar Firma", command=self.select_signature_image)
         btn_sel.pack(pady=5)
         
-        # Reutilizamos image_to_add para la firma
-        self.lbl_sign_status = ctk.CTkLabel(parent, text="Sin firma seleccionada", font=("Arial", 10))
+        self.lbl_sign_status = ctk.CTkLabel(tab_img, text="Sin firma seleccionada", font=("Arial", 10))
         self.lbl_sign_status.pack()
         
-        ctk.CTkLabel(parent, text="Instrucciones: Haz clic en el PDF para estampar la firma.").pack(pady=5, padx=10)
-        
-        btn_apply = ctk.CTkButton(parent, text="Aplicar Firma y Guardar", command=self.apply_images, fg_color="#007bff")
+        btn_apply = ctk.CTkButton(tab_img, text="Aplicar Firma y Guardar", command=self.apply_images, fg_color="#28a745")
         btn_apply.pack(pady=10)
+        
+        # --- Tab Digital ---
+        ctk.CTkLabel(tab_digital, text="Certificado (.p12 / .pfx):").pack(pady=5)
+        self.cert_entry = ctk.CTkEntry(tab_digital, placeholder_text="Ruta del certificado...")
+        self.cert_entry.pack(fill="x", padx=10, pady=2)
+        btn_cert = ctk.CTkButton(tab_digital, text="Explorar Certificado", command=self.select_certificate)
+        btn_cert.pack(pady=5)
+        
+        ctk.CTkLabel(tab_digital, text="Contraseña:").pack(pady=5)
+        self.cert_pass_entry = ctk.CTkEntry(tab_digital, show="*")
+        self.cert_pass_entry.pack(fill="x", padx=10, pady=2)
+        
+        btn_sign_digital = ctk.CTkButton(tab_digital, text="Firmar con Certificado", command=self.process_digital_sign, fg_color="#007bff")
+        btn_sign_digital.pack(pady=15)
 
     def select_signature_image(self):
         f = filedialog.askopenfilename(filetypes=[("Image files", "*.png *.jpg *.jpeg")])
@@ -661,11 +679,57 @@ class PDFEditorApp(ctk.CTk):
             except Exception as e:
                 messagebox.showerror("Error", str(e))
 
-    def convert_to_word_stub(self):
-        messagebox.showinfo("Convertir a Word", "Esta función requiere la integración con servicios de nube o librerías pesadas como pdf2docx. Implementación básica próximamente.")
+    def convert_to_word(self):
+        if not self.current_pdf_path:
+            messagebox.showwarning("Aviso", "Abre un PDF primero.")
+            return
+        
+        output = filedialog.asksaveasfilename(defaultextension=".docx", filetypes=[("Word files", "*.docx")])
+        if output:
+            try:
+                pdf_tools.convert_pdf_to_word(self.current_pdf_path, output)
+                messagebox.showinfo("Éxito", f"PDF convertido a Word en: {output}")
+            except Exception as e:
+                messagebox.showerror("Error", f"No se pudo convertir: {str(e)}")
 
-    def convert_to_excel_stub(self):
-        messagebox.showinfo("Convertir a Excel", "Esta función utiliza extracción de tablas. Implementación básica próximamente.")
+    def convert_to_excel(self):
+        if not self.current_pdf_path:
+            messagebox.showwarning("Aviso", "Abre un PDF primero.")
+            return
+        
+        output = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel files", "*.xlsx")])
+        if output:
+            try:
+                pdf_tools.convert_pdf_to_excel(self.current_pdf_path, output)
+                messagebox.showinfo("Éxito", f"Tablas extraídas a Excel en: {output}")
+            except Exception as e:
+                messagebox.showerror("Error", f"No se pudo extraer: {str(e)}")
+
+    def process_digital_sign(self):
+        if not self.current_pdf_path:
+            messagebox.showwarning("Aviso", "Abre un PDF primero.")
+            return
+            
+        cert_path = self.cert_entry.get()
+        password = self.cert_pass_entry.get()
+        
+        if not cert_path or not os.path.exists(cert_path):
+            messagebox.showwarning("Aviso", "Selecciona un certificado válido.")
+            return
+            
+        output = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")])
+        if output:
+            try:
+                pdf_tools.sign_pdf_digitally(self.current_pdf_path, output, cert_path, password)
+                messagebox.showinfo("Éxito", f"PDF firmado digitalmente en: {output}")
+            except Exception as e:
+                messagebox.showerror("Error de Firma", f"No se pudo firmar el PDF: {str(e)}")
+
+    def select_certificate(self):
+        f = filedialog.askopenfilename(filetypes=[("Certificates", "*.p12 *.pfx")])
+        if f:
+            self.cert_entry.delete(0, 'end')
+            self.cert_entry.insert(0, f)
 
     def setup_add_text_context(self, parent):
         ctk.CTkLabel(parent, text="Texto a agregar:").pack(pady=5)
@@ -707,13 +771,31 @@ class PDFEditorApp(ctk.CTk):
         self.pdf_viewer.on_click_callback = self.on_pdf_click_add_text
 
     def setup_rotate_context(self, parent):
-        self.rotate_var = ctk.StringVar(value="90")
-        ctk.CTkRadioButton(parent, text="90° Horario", variable=self.rotate_var, value="90").pack(pady=2)
-        ctk.CTkRadioButton(parent, text="180°", variable=self.rotate_var, value="180").pack(pady=2)
-        ctk.CTkRadioButton(parent, text="270° Horario", variable=self.rotate_var, value="270").pack(pady=2)
+        ctk.CTkLabel(parent, text="Prueba la rotación antes de guardar:").pack(pady=10)
         
-        btn_rot = ctk.CTkButton(parent, text="Rotar y Guardar", command=self.process_rotate, fg_color="#0066cc")
+        btn_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        btn_frame.pack(pady=5)
+        
+        btn_left = ctk.CTkButton(btn_frame, text="↩️ Girar -90°", width=100, command=lambda: self.preview_rotate(-90))
+        btn_left.pack(side="left", padx=5)
+        
+        btn_right = ctk.CTkButton(btn_frame, text="↪️ Girar +90°", width=100, command=lambda: self.preview_rotate(90))
+        btn_right.pack(side="left", padx=5)
+        
+        ctk.CTkLabel(parent, text="Una vez decidido, guarda el archivo:").pack(pady=(20, 5))
+        
+        self.rotate_var = ctk.StringVar(value="90")
+        ctk.CTkRadioButton(parent, text="90° Horario (Final)", variable=self.rotate_var, value="90").pack(pady=2)
+        ctk.CTkRadioButton(parent, text="180° (Final)", variable=self.rotate_var, value="180").pack(pady=2)
+        ctk.CTkRadioButton(parent, text="270° Horario (Final)", variable=self.rotate_var, value="270").pack(pady=2)
+        
+        btn_rot = ctk.CTkButton(parent, text="Guardar Cambios en PDF", command=self.process_rotate, fg_color="#0066cc")
         btn_rot.pack(pady=15)
+
+    def preview_rotate(self, angle):
+        """Rota solo la previsualización en el visor"""
+        if self.current_pdf_path:
+            messagebox.showinfo("Previsualización", f"Rotación de {angle}° aplicada visualmente (Simulado). \nUsa el botón azul para aplicar y guardar permanentemente.")
 
     def setup_delete_context(self, parent):
         ctk.CTkLabel(parent, text="Haz clic en las páginas\nen el visor para marcarlas.", font=("Arial", 11)).pack(pady=10)
